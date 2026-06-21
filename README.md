@@ -1,6 +1,9 @@
 # spectral-pathtracer
-
 A spectral path tracer targeting AMD GPUs via HIP/ROCm.
+
+*WIP CURRENT PROGRESS:*
+
+<img src="out.png" width="400">
 
 ## Requirements
 

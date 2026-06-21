@@ -23,5 +23,3 @@ compile_commands.json
 *.so
 *.exe
 
-#
-*.png
