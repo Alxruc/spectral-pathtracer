@@ -1,4 +1,5 @@
 #include <hip/hip_runtime.h>
+#include <algorithm>
 
 #include <gpu_ds.hpp>
 #include <renderer.hpp>
@@ -64,20 +65,57 @@ __device__ float skyRadiance(Vec3 dir)
     return (1.0f - s) * 1.0f + s * 0.7f;
 }
 
-__device__ float traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
+
+// this is uniform for now which means calculating the density every time is wasteful
+// but it's simply to make it easier to change later
+__device__ float sampleWavelength(RNG& rng, float& density) {
+    density =  UNIFORM_DENSITY; // 1 / (MAX_WAVELENGTH_NM - MIN_WAVELENGTH_NM);
+    float lamda = (MAX_WAVELENGTH_NM - MIN_WAVELENGTH_NM) * rng.next() + MIN_WAVELENGTH_NM;
+    return lamda;
+}
+
+// Simple Analytic Approximations to the CIE XYZ Color Matching Functions
+// Wyman et al
+__device__ Vec3 evaluateCMF(float lamda) {
+    float ln_lamda = logf(lamda);
+    float x = 1.065 * expf(-0.5 * powf(((lamda - 595.8) / 33.33), 2)) + 0.366 * expf(-0.5 * powf(((lamda-446.8) / 19.44), 2));
+    float y = 1.014 * expf(-0.5 * powf(((ln_lamda - logf(556.3)) / 0.075), 2));
+    float z = 1.839 * expf(-0.5 * powf(((ln_lamda - logf(449.8)) / 0.051), 2));
+
+    return {x, y, z};
+}
+
+__device__ Vec3 convertXYZtoRGB(float X, float Y, float Z) {
+    float R =  3.2404542*X - 1.5371385*Y - 0.4985314*Z;
+    float G = -0.9692660*X + 1.8760108*Y + 0.0415560*Z;
+    float B =  0.0556434*X - 0.2040259*Y + 1.0572252*Z;
+
+    return {R, G, B};
+}
+
+
+// WIP
+__device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
 {
-    float throughput = 1.0f;
+    float density = 0;
+    float lamda = sampleWavelength(rng, density);
+    float throughput = 1.0f / density;
     for (int depth = 0; depth < 64; ++depth) {
         Hit h;
         if (!hitScene(scn, n, ray, h))
-            return throughput * skyRadiance(ray.dir);
+            return throughput * skyRadiance(ray.dir) * evaluateCMF(lamda);
         Vec3 d = sampleSphere(rng);
         if (dot(d, h.n) < 0.0f) d = -1.0f * d;
         throughput *= 2.0f * h.albedo * dot(d, h.n);
         ray.origin = h.p;
         ray.dir    = d;
     }
-    return 0.0f;
+    return {0.0f, 0.0f, 0.0f};
+}
+
+__device__ float clamp(float d, float min, float max) {
+  const float t = d < min ? min : d;
+  return t > max ? max : t;
 }
 
 __global__ void scene(unsigned char* img, int width, int height, int spp) {
@@ -88,24 +126,28 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
     RNG rng{ uint32_t(py) * uint32_t(width) + uint32_t(px) };
 
     float aspect = float(width) / float(height);
-    float sum = 0.0;
+    Vec3 sum = {0.0f, 0.0f, 0.0f};
 
     Sphere scn[2] = {{{0,-100.7,-2}, 100, 0.8}, {{0,0,-2}, 0.7, 0.5}};
 
     for (int s = 0; s < spp; ++s) {
         float u = (px + rng.next()) / float(width);   // + jitter
-        float v = (py + rng.next()) / float(height);  // gives free anti-aliasing
+        float v = (py + rng.next()) / float(height);
         Ray ray;
         ray.origin = {0.0f, 0.0f, 0.0f};
         ray.dir    = {(u - 0.5f) * 2.0f * aspect, (0.5f - v) * 2.0f, -1.0f};
-        sum += traceRadiance(ray, rng, scn, 2);
+        sum = sum + traceRadiance(ray, rng, scn, 2);
     }
-    sum /= float(spp);
+
+    // picture too bright otherwise
+    sum = (NORMALIZATION_CONSTANT / float(spp)) * sum ;
+
+    Vec3 rgb = convertXYZtoRGB(sum.x, sum.y, sum.z);
 
     int idx = 3 * (py * width + px);
-    img[idx + 0] = (unsigned char)(255.999f * sum);
-    img[idx + 1] = (unsigned char)(255.999f * sum);
-    img[idx + 2] = (unsigned char)(255.999f * sum);
+    img[idx + 0] = (unsigned char)(255.999f * clamp(rgb.x, 0.0, 1.0));
+    img[idx + 1] = (unsigned char)(255.999f * clamp(rgb.y, 0.0, 1.0));
+    img[idx + 2] = (unsigned char)(255.999f * clamp(rgb.z, 0.0, 1.0));
 }
 
 Renderer* renderer_create(int w, int h) {

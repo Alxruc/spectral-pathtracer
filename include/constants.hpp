@@ -3,7 +3,13 @@
 
 // gpu
 const int BLOCK_SIZE = 16;
-const int SPP = 1024;
+const int SPP = 2048;
+
+// rendering
+const float MIN_WAVELENGTH_NM = 360;
+const float MAX_WAVELENGTH_NM = 830;
+const float UNIFORM_DENSITY = 0.00212765957;
+const float NORMALIZATION_CONSTANT = 0.011;
 
 
 // math
