@@ -51,8 +51,10 @@ __device__ bool hitScene(const Sphere* scn, int n, const Ray& r, Hit& h)
             closest = t; found = true;
             h.t = t;
             h.p = r.origin + t * r.dir;
-            h.n = (1.0f / scn[i].radius) * (h.p - scn[i].center);
-            h.albedo = scn[i].albedo;
+            Vec3 outward = (1.0f / scn[i].radius) * (h.p - scn[i].center);
+            h.front_face = dot(r.dir, outward) < 0.0f;
+            h.n   = h.front_face ? outward : -outward;
+            h.mat = &scn[i].mat;
         }
     }
     return found;
@@ -93,8 +95,30 @@ __device__ Vec3 convertXYZtoRGB(float X, float Y, float Z) {
     return {R, G, B};
 }
 
+__device__ float cauchy(float lamda) {
+    // n(lamda) = A + B / lamda ^ 2 (B and lamda in micrometer)
+    // we use magic numbers here since we assume that every glass
+    // is just BK7 glass, who cares for now
+    return 1.5046 + 0.0042 / powf((lamda / 1000), 2);
+}
 
-// WIP
+__device__ float schlick(float cos_t, float eta) {
+    float r = powf((1.0-eta) / (1.0+eta), 2);
+    return r + (1-r) * powf((1-cos_t), 5);
+}
+
+__device__ Vec3 reflect(Vec3 dir, Vec3 normal) {
+    return dir - 2.0f * (dot(dir, normal)) * normal;
+}
+
+__device__ Vec3 refract(Vec3 dir, Vec3 normal, float eta) {
+    // standard opengl refract formula
+    float dot_N_I = dot(normal, dir); 
+    float k = 1.0f - eta * eta * (1.0f - dot_N_I * dot_N_I);
+    return eta * dir - (eta * dot_N_I + sqrtf(k)) * normal;
+}
+
+
 __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
 {
     float density = 0;
@@ -104,9 +128,36 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
         Hit h;
         if (!hitScene(scn, n, ray, h))
             return throughput * skyRadiance(ray.dir, lamda) * evaluateCMF(lamda);
-        Vec3 d = sampleSphere(rng);
-        if (dot(d, h.n) < 0.0f) d = -1.0f * d;
-        throughput *= 2.0f * h.albedo * dot(d, h.n);
+
+        Vec3 d;
+        // we hit glass
+        if (h.mat->type == MatType::Dielectric) {
+            float ior = cauchy(lamda);
+            // if we hit the front face, we are entering the glass, if not we are leaving the glass
+            // eta = n_from / n_to
+            float eta = h.front_face ? 1.0 / ior : ior;
+
+            Vec3  unit = normalize(ray.dir);
+            float cos_t = fminf(dot(-1.0f * unit, h.n), 1.0f);
+            float sin_t = sqrtf(1.0f - cos_t * cos_t);
+
+            bool tir = eta * sin_t > 1;
+
+            if(tir || schlick(cos_t, eta) > rng.next()) {
+                d = reflect(unit, h.n);
+            }
+            else {
+                d = refract(unit, h.n, eta);
+            }
+            throughput *= h.mat->albedo; 
+        }
+        // we hit other materials
+        else {
+            d = sampleSphere(rng);
+            if (dot(d, h.n) < 0.0f) d = -1.0f * d;
+            throughput *= 2.0f * h.mat->albedo * dot(d, h.n);
+        }
+
         ray.origin = h.p;
         ray.dir    = d;
     }
@@ -128,7 +179,23 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
     float aspect = float(width) / float(height);
     Vec3 sum = {0.0f, 0.0f, 0.0f};
 
-    Sphere scn[2] = {{{0,-100.7,-2}, 100, 0.8}, {{0,0,-2}, 0.7, 0.4}};
+    Sphere floor = {
+       {0,-100.7,-2},
+       100,
+       make_lambertian(0.8)
+    };
+    Sphere glass = {
+        {0,0,-2},
+        0.6,
+        make_dielectric()
+        
+    };
+    Sphere reg = {
+        {1.2,0.5,-5},
+        0.9,
+        make_lambertian(0.4)
+    };
+    Sphere scn[3] = {floor, glass, reg};
 
     for (int s = 0; s < spp; ++s) {
         float u = (px + rng.next()) / float(width);   // + jitter
@@ -136,7 +203,7 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
         Ray ray;
         ray.origin = {0.0f, 0.0f, 0.0f};
         ray.dir    = {(u - 0.5f) * 2.0f * aspect, (0.5f - v) * 2.0f, -1.0f};
-        sum = sum + traceRadiance(ray, rng, scn, 2);
+        sum = sum + traceRadiance(ray, rng, scn, std::size(scn));
     }
 
     // picture too bright otherwise
