@@ -58,16 +58,16 @@ __device__ bool hitScene(const Sphere* scn, int n, const Ray& r, Hit& h)
     return found;
 }
 
-__device__ float skyRadiance(Vec3 dir)
+__device__ float skyRadiance(Vec3 dir, float lamda)
 {
     Vec3 d = normalize(dir);
     float s = 0.5f * (d.y + 1.0f);
-    return (1.0f - s) * 1.0f + s * 0.7f;
+    float radiance = (1.0f - s) * 1.0f + s * 0.7f;
+    return radiance * powf(NORMALIZATION_WAVELENGTH_NM / lamda, 4.0); // 550nm as baseline as human eye
 }
 
 
 // this is uniform for now which means calculating the density every time is wasteful
-// but it's simply to make it easier to change later
 __device__ float sampleWavelength(RNG& rng, float& density) {
     density =  UNIFORM_DENSITY; // 1 / (MAX_WAVELENGTH_NM - MIN_WAVELENGTH_NM);
     float lamda = (MAX_WAVELENGTH_NM - MIN_WAVELENGTH_NM) * rng.next() + MIN_WAVELENGTH_NM;
@@ -103,7 +103,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
     for (int depth = 0; depth < 64; ++depth) {
         Hit h;
         if (!hitScene(scn, n, ray, h))
-            return throughput * skyRadiance(ray.dir) * evaluateCMF(lamda);
+            return throughput * skyRadiance(ray.dir, lamda) * evaluateCMF(lamda);
         Vec3 d = sampleSphere(rng);
         if (dot(d, h.n) < 0.0f) d = -1.0f * d;
         throughput *= 2.0f * h.albedo * dot(d, h.n);
@@ -128,7 +128,7 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
     float aspect = float(width) / float(height);
     Vec3 sum = {0.0f, 0.0f, 0.0f};
 
-    Sphere scn[2] = {{{0,-100.7,-2}, 100, 0.8}, {{0,0,-2}, 0.7, 0.5}};
+    Sphere scn[2] = {{{0,-100.7,-2}, 100, 0.8}, {{0,0,-2}, 0.7, 0.4}};
 
     for (int s = 0; s < spp; ++s) {
         float u = (px + rng.next()) / float(width);   // + jitter
