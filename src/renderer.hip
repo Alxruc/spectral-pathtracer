@@ -154,8 +154,8 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
         }
         // we hit metal
         else if (h.mat->type == MatType::Metal) {
-            float n = getRefractiveIndex(MetalType::Chrome, lamda);  // chrome hardcoded for now
-            float k = getExtinctionIndex(MetalType::Chrome, lamda);
+            float n = getRefractiveIndex(h.mat->metal.metal, lamda);
+            float k = getExtinctionIndex(h.mat->metal.metal, lamda);
             float r_0 = (powf(n-1, 2) + powf(k, 2)) / (powf(n+1, 2) + powf(k,2));
 
             Vec3  unit = normalize(ray.dir);
@@ -213,7 +213,7 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
     Sphere metal = {
         {-1, 0.5, -2.5},
         0.5,
-        make_metal(0.25)
+        make_metal(MetalType::Chrome, 0.1)
     };
 
     Sphere scn[4] = {floor, glass, reg, metal};
