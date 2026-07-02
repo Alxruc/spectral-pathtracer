@@ -6,22 +6,46 @@
 enum class MatType { Lambertian, Metal, Dielectric };
 enum class MetalType { Chrome, Gold }; // only chrome implemented right now
 
-struct Material {
-    MatType type;
-    float   albedo;
-    float   roughness;
+struct MetalProps {
+    float roughness;
 };
 
-__host__ __device__ Material make_lambertian(float albedo) {
-    return Material{ MatType::Lambertian, albedo, 0.0f };
+struct LambertianProps {
+    float albedo;
+};
+
+struct DielectricProps {
+    float albedo;
+};
+
+struct Material {
+    MatType type;
+    union {
+        LambertianProps lambertian;
+        MetalProps      metal;
+        DielectricProps dielectric;
+    };
+};
+
+__host__ __device__ inline Material make_lambertian(float albedo) {
+    return Material{
+            .type = MatType::Lambertian,
+            .lambertian = { .albedo = albedo }
+        };
 }
 
-__host__ __device__ Material make_metal(float albedo, float roughness) {
-    return Material{ MatType::Metal, albedo, roughness };
+__host__ __device__ inline Material make_metal(float roughness) {
+    return Material{
+        .type = MatType::Metal,
+        .metal = { .roughness = roughness }
+    };
 }
 
-__host__ __device__ Material make_dielectric() {
-    return Material{ MatType::Dielectric, 1.0, 0.0f};
+__host__ __device__ inline Material make_dielectric() {
+    return Material{
+        .type = MatType::Dielectric,
+        .dielectric = { .albedo = 1.0f }
+    };
 }
 
 /*

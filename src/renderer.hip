@@ -150,7 +150,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
             else {
                 d = refract(unit, h.n, eta);
             }
-            throughput *= h.mat->albedo;
+            throughput *= h.mat->dielectric.albedo;
         }
         // we hit metal
         else if (h.mat->type == MatType::Metal) {
@@ -162,7 +162,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
             float cos_t = fminf(dot(-1.0f * unit, h.n), 1.0f);
             float reflectance = r_0 + (1-r_0) * powf((1-cos_t), 5);
 
-            d = reflect(unit, h.n);
+            d = reflect(unit, h.n) + (h.mat->metal.roughness * sampleSphere(rng));
 
             throughput *= reflectance;
         }
@@ -170,7 +170,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
         else {
             d = sampleSphere(rng);
             if (dot(d, h.n) < 0.0f) d = -1.0f * d;
-            throughput *= 2.0f * h.mat->albedo * dot(d, h.n);
+            throughput *= 2.0f * h.mat->lambertian.albedo * dot(d, h.n);
         }
 
         ray.origin = h.p;
@@ -213,7 +213,7 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
     Sphere metal = {
         {-1, 0.5, -2.5},
         0.5,
-        make_metal(1.0, 0.0)
+        make_metal(0.25)
     };
 
     Sphere scn[4] = {floor, glass, reg, metal};
