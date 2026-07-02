@@ -2,6 +2,7 @@
 #define GPU_DS_HPP
 #include <hip/hip_runtime.h>
 #include <iostream>
+#include <materials.hpp>
 
 struct Vec3 { float x,y,z; };
 __host__ __device__ inline Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; };
@@ -11,26 +12,6 @@ __host__ __device__ inline Vec3 operator*(float s, Vec3 a) { return {s * a.x, s 
 __host__ __device__ inline Vec3 operator/(Vec3 a, float s) { return {a.x / s, a.y / s, a.z / s}; };
 __host__ __device__ inline float dot(Vec3 a, Vec3 b)      { return a.x * b.x + a.y * b.y + a.z * b.z; };
 __host__ __device__ inline Vec3 normalize(Vec3 a)         { return (1.0f / sqrtf(dot(a, a))) * a; };
-
-enum class MatType { Lambertian, Metal, Dielectric };
-
-struct Material {
-    MatType type;
-    float   albedo;
-    float   roughness;
-};
-
-__host__ __device__ Material make_lambertian(float albedo) {
-    return Material{ MatType::Lambertian, albedo, 0.0f };
-}
-
-__host__ __device__ Material make_metal(float albedo, float roughness) {
-    return Material{ MatType::Metal, albedo, roughness };
-}
-
-__host__ __device__ Material make_dielectric() {
-    return Material{ MatType::Dielectric, 1.0, 0.0f};
-}
 
 struct Ray { Vec3 origin, dir; };
 struct Hit    { float t; Vec3 p; Vec3 n; bool front_face; const Material* mat; };

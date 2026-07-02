@@ -4,6 +4,7 @@
 #include <gpu_ds.hpp>
 #include <renderer.hpp>
 #include <constants.hpp>
+#include <materials.hpp>
 
 struct Renderer {
     unsigned char* d_img;
@@ -113,7 +114,7 @@ __device__ Vec3 reflect(Vec3 dir, Vec3 normal) {
 
 __device__ Vec3 refract(Vec3 dir, Vec3 normal, float eta) {
     // standard opengl refract formula
-    float dot_N_I = dot(normal, dir); 
+    float dot_N_I = dot(normal, dir);
     float k = 1.0f - eta * eta * (1.0f - dot_N_I * dot_N_I);
     return eta * dir - (eta * dot_N_I + sqrtf(k)) * normal;
 }
@@ -149,7 +150,21 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
             else {
                 d = refract(unit, h.n, eta);
             }
-            throughput *= h.mat->albedo; 
+            throughput *= h.mat->albedo;
+        }
+        // we hit metal
+        else if (h.mat->type == MatType::Metal) {
+            float n = getRefractiveIndex(MetalType::Chrome, lamda);  // chrome hardcoded for now
+            float k = getExtinctionIndex(MetalType::Chrome, lamda);
+            float r_0 = (powf(n-1, 2) + powf(k, 2)) / (powf(n+1, 2) + powf(k,2));
+
+            Vec3  unit = normalize(ray.dir);
+            float cos_t = fminf(dot(-1.0f * unit, h.n), 1.0f);
+            float reflectance = r_0 + (1-r_0) * powf((1-cos_t), 5);
+
+            d = reflect(unit, h.n);
+
+            throughput *= reflectance;
         }
         // we hit other materials
         else {
@@ -185,17 +200,23 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
        make_lambertian(0.8)
     };
     Sphere glass = {
-        {0,0,-2},
-        0.6,
+        {0,0,-3},
+        0.7,
         make_dielectric()
-        
     };
     Sphere reg = {
-        {1.2,0.5,-5},
+        {1.2,0.5,-6},
         0.9,
         make_lambertian(0.4)
     };
-    Sphere scn[3] = {floor, glass, reg};
+
+    Sphere metal = {
+        {-1, 0.5, -2.5},
+        0.5,
+        make_metal(1.0, 0.0)
+    };
+
+    Sphere scn[4] = {floor, glass, reg, metal};
 
     for (int s = 0; s < spp; ++s) {
         float u = (px + rng.next()) / float(width);   // + jitter
@@ -226,7 +247,7 @@ Renderer* renderer_create(int w, int h) {
     return r;
 }
 
-void renderer_destroy(Renderer* r) { 
+void renderer_destroy(Renderer* r) {
     HIP_CHECK(hipFree(r->d_img));
     delete r;
 }
