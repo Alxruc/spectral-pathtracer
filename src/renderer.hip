@@ -253,7 +253,7 @@ void renderer_destroy(Renderer* r) {
 }
 
 void render(Renderer* r, std::vector<unsigned char> &pixels) {
-    scene<<<r->grid, r->block>>>(r->d_img, r->width, r->height, SPP);
+    hipLaunchKernelGGL(scene, r->grid, r->block, 0, 0, r->d_img, r->width, r->height, SPP);
     HIP_CHECK(hipGetLastError());
     HIP_CHECK(hipDeviceSynchronize());
     HIP_CHECK(hipMemcpy(pixels.data(), r->d_img, pixels.size(), hipMemcpyDeviceToHost));

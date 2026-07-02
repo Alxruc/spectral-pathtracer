@@ -1,6 +1,6 @@
 # Build output
 build/
-build-*/
+build_cpu/
 out/
 install/
 
