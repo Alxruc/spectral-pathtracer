@@ -3,7 +3,7 @@
 
 // gpu
 const int BLOCK_SIZE = 16;
-const int SPP = 4096;
+const int SPP = 512;
 
 // rendering
 const float MIN_WAVELENGTH_NM = 360;
@@ -16,5 +16,6 @@ const float NORMALIZATION_CONSTANT = 0.011;
 // math
 const float PI = 3.14159265359;
 const float TWO_PI = 6.28318530718;
+const float EPSILON = 0.0001;
 
 #endif

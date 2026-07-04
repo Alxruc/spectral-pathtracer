@@ -1,10 +1,11 @@
 #include <hip/hip_runtime.h>
-#include <algorithm>
 
 #include <gpu_ds.hpp>
+#include <geometry.hpp>
 #include <renderer.hpp>
 #include <constants.hpp>
 #include <materials.hpp>
+#include <intersect.hpp>
 
 struct Renderer {
     unsigned char* d_img;
@@ -43,12 +44,11 @@ __device__ bool hitSphereT(const Sphere& s, const Ray& r,
 
 __device__ bool hitScene(const Sphere* scn, int n, const Ray& r, Hit& h)
 {
-    const float TMIN = 1e-3f; // shadow-acne guard
     float closest = 1e30f;
     bool found = false;
     for (int i = 0; i < n; ++i) {
         float t;
-        if (hitSphereT(scn[i], r, TMIN, closest, t)) {
+        if (hitSphereT(scn[i], r, EPSILON, closest, t)) {
             closest = t; found = true;
             h.t = t;
             h.p = r.origin + t * r.dir;
@@ -58,6 +58,20 @@ __device__ bool hitScene(const Sphere* scn, int n, const Ray& r, Hit& h)
             h.mat = &scn[i].mat;
         }
     }
+    // crude test to see if triangle intersect works
+    if (!found) {
+        float t;
+        Triangle tri = {{-1, 1, -2.5}, {0, 2, -2.5}, {1, 1, -2.5}};
+        if (rayTriangleIntersect(tri, r, t)) {
+            found = true;
+            h.t = t;
+            h.p = r.origin + t * r.dir;
+            h.n = {0, 0, 1}; // hardcoded triangle faces into "camera";
+            h.front_face = true;
+            h.mat = &scn[0].mat;
+        }
+    }
+
     return found;
 }
 
