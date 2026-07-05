@@ -1,4 +1,5 @@
 #include <hip/hip_runtime.h>
+#include <iostream>
 
 #include <gpu_ds.hpp>
 #include <geometry.hpp>
@@ -6,13 +7,20 @@
 #include <constants.hpp>
 #include <materials.hpp>
 #include <intersect.hpp>
+#include <acceleration_ds.hpp>
+#include <io.hpp>
+
+// dont know if this is bad
+struct Scene {
+    GPUBVHManager manager;
+};
 
 struct Renderer {
     unsigned char* d_img;
     dim3 block, grid;
     int width, height;
+    Scene scene;
 };
-
 
 __device__ Vec3 sampleSphere(RNG& rng)
 {
@@ -22,31 +30,24 @@ __device__ Vec3 sampleSphere(RNG& rng)
     return {r * cosf(phi), r * sinf(phi), z};      // already unit length
 }
 
-// per sphere: accept the NEAR root if it's inside (tmin, tmax);
-// otherwise try the FAR root
-__device__ bool hitSphereT(const Sphere& s, const Ray& r,
-                           float tmin, float tmax, float& tOut)
-{
-    Vec3 oc = r.origin - s.center;
-    float a = dot(r.dir, r.dir);
-    float b = 2.0f * dot(oc, r.dir);
-    float c = dot(oc, oc) - s.radius * s.radius;
-    float disc = b * b - 4.0f * a * c;
-    if (disc < 0.0f) return false;
-    float sq = sqrtf(disc);
-    float t = (-b - sq) / (2.0f * a);
-    if (t < tmin || t > tmax) {
-        t = (-b + sq) / (2.0f * a);
-        if (t < tmin || t > tmax) return false;
-    }
-    tOut = t; return true;
-}
-
-__device__ bool hitScene(const Sphere* scn, int n, const Ray& r, Hit& h)
+__device__ bool hitScene(const DeviceBVH& bvh, const Ray& r, Hit& h)
 {
     float closest = 1e30f;
     bool found = false;
-    for (int i = 0; i < n; ++i) {
+
+    Sphere reg = {
+        {4, 0, -4},
+        1.7,
+        make_lambertian(0.8)
+    };
+    Sphere reg2 = {
+        {-4, 0, -4},
+        1.5,
+        make_lambertian(1.0)
+    };
+    const Sphere scn[2] = {reg, reg2};
+    float t;
+    for (int i = 0; i < 2; ++i) {
         float t;
         if (hitSphereT(scn[i], r, EPSILON, closest, t)) {
             closest = t; found = true;
@@ -58,18 +59,15 @@ __device__ bool hitScene(const Sphere* scn, int n, const Ray& r, Hit& h)
             h.mat = &scn[i].mat;
         }
     }
-    // crude test to see if triangle intersect works
-    if (!found) {
-        float t;
-        Triangle tri = {{-1, 1, -2.5}, {0, 2, -2.5}, {1, 1, -2.5}};
-        if (rayTriangleIntersect(tri, r, t)) {
-            found = true;
-            h.t = t;
-            h.p = r.origin + t * r.dir;
-            h.n = {0, 0, 1}; // hardcoded triangle faces into "camera";
-            h.front_face = true;
-            h.mat = &scn[0].mat;
-        }
+
+
+    if(!found && rayBVHIntersect(r, bvh, t)) {
+        found = true;
+        h.t = t;
+        h.p = r.origin + t * r.dir;
+        h.n = {0, 0, 1};
+        h.front_face = true;
+        h.mat = &bvh.mat;
     }
 
     return found;
@@ -134,14 +132,14 @@ __device__ Vec3 refract(Vec3 dir, Vec3 normal, float eta) {
 }
 
 
-__device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n)
+__device__ Vec3 traceRadiance(Ray ray, RNG& rng, const DeviceBVH& bvh)
 {
     float density = 0;
     float lamda = sampleWavelength(rng, density);
     float throughput = 1.0f / density;
     for (int depth = 0; depth < 64; ++depth) {
         Hit h;
-        if (!hitScene(scn, n, ray, h))
+        if (!hitScene(bvh, ray, h))
             return throughput * skyRadiance(ray.dir, lamda) * evaluateCMF(lamda);
 
         Vec3 d;
@@ -198,7 +196,7 @@ __device__ float clamp(float d, float min, float max) {
   return t > max ? max : t;
 }
 
-__global__ void scene(unsigned char* img, int width, int height, int spp) {
+__global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, int spp) {
     int px = blockIdx.x * blockDim.x + threadIdx.x;
     int py = blockIdx.y * blockDim.y + threadIdx.y;
     if (px >= width || py >= height) return;
@@ -208,37 +206,37 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
     float aspect = float(width) / float(height);
     Vec3 sum = {0.0f, 0.0f, 0.0f};
 
-    Sphere floor = {
-       {0,-100.7,-2},
-       100,
-       make_lambertian(0.8)
-    };
-    Sphere glass = {
-        {0,0,-3},
-        0.7,
-        make_dielectric()
-    };
-    Sphere reg = {
-        {1.2,0.5,-6},
-        0.9,
-        make_lambertian(0.4)
-    };
+    // Sphere floor = {
+    //    {0,-100.7,-2},
+    //    100,
+    //    make_lambertian(0.8)
+    // };
+    // Sphere glass = {
+    //     {0,0,-3},
+    //     0.7,
+    //     make_dielectric()
+    // };
+    // Sphere reg = {
+    //     {1.2,0.5,-6},
+    //     0.9,
+    //     make_lambertian(0.4)
+    // };
 
-    Sphere metal = {
-        {-1, 0.5, -2.5},
-        0.5,
-        make_metal(MetalType::Chrome, 0.1)
-    };
+    // Sphere metal = {
+    //     {-1, 0.5, -2.5},
+    //     0.5,
+    //     make_metal(MetalType::Chrome, 0.1)
+    // };
 
-    Sphere scn[4] = {floor, glass, reg, metal};
+    // Sphere scn[4] = {floor, glass, reg, metal};
 
     for (int s = 0; s < spp; ++s) {
         float u = (px + rng.next()) / float(width);   // + jitter
         float v = (py + rng.next()) / float(height);
         Ray ray;
-        ray.origin = {0.0f, 0.0f, 0.0f};
+        ray.origin = {0.0f, 0.0f, 1.8f};
         ray.dir    = {(u - 0.5f) * 2.0f * aspect, (0.5f - v) * 2.0f, -1.0f};
-        sum = sum + traceRadiance(ray, rng, scn, std::size(scn));
+        sum = sum + traceRadiance(ray, rng, bvh);
     }
 
     // picture too bright otherwise
@@ -250,6 +248,14 @@ __global__ void scene(unsigned char* img, int width, int height, int spp) {
     img[idx + 0] = (unsigned char)(255.999f * clamp(rgb.x, 0.0, 1.0));
     img[idx + 1] = (unsigned char)(255.999f * clamp(rgb.y, 0.0, 1.0));
     img[idx + 2] = (unsigned char)(255.999f * clamp(rgb.z, 0.0, 1.0));
+}
+
+void build_bvh(Renderer* r) {
+    std::vector<Triangle> mesh = loadObj("data/spot.obj");
+    BVH bvh;
+    bvh.tris = mesh;
+    bvh.build();
+    r->scene.manager.upload(bvh);
 }
 
 Renderer* renderer_create(int w, int h) {
@@ -267,7 +273,7 @@ void renderer_destroy(Renderer* r) {
 }
 
 void render(Renderer* r, std::vector<unsigned char> &pixels) {
-    hipLaunchKernelGGL(scene, r->grid, r->block, 0, 0, r->d_img, r->width, r->height, SPP);
+    hipLaunchKernelGGL(scene, r->grid, r->block, 0, 0, r->d_img, r->width, r->height, r->scene.manager.bvh, SPP);
     HIP_CHECK(hipGetLastError());
     HIP_CHECK(hipDeviceSynchronize());
     HIP_CHECK(hipMemcpy(pixels.data(), r->d_img, pixels.size(), hipMemcpyDeviceToHost));

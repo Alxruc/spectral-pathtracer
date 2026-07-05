@@ -4,6 +4,7 @@
 #include <hip/hip_runtime.h>
 #include <geometry.hpp>
 #include <constants.hpp>
+#include <acceleration_ds.hpp>
 
 // Möller-Trumbore intersection algorithm
 // P = A + u(B-A) + v(C-A) of triangle ABC
@@ -36,6 +37,137 @@ __device__ inline bool rayTriangleIntersect(const Triangle& tri, const Ray& r, f
     tOut = inv_det * dot(e2, ttr_e1);
     if (tOut < EPSILON) return false;
     return true;
+}
+
+// we assume only leafs get sent here
+__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float& tOut) {
+    float closestT = 1e20;
+    float hit = false;
+    for(uint32_t i = 0; i < node->tri_count; i++) {
+        float hitT;
+        uint32_t global_tri_idx = bvh.tri_idx[node->left_first + i];
+        const Triangle& tri = bvh.tris[global_tri_idx];
+        if (rayTriangleIntersect(tri, r, hitT)) {
+            if(hitT < closestT) {
+                closestT = hitT;
+            }
+            hit = true;
+        }
+    }
+
+    if(hit) {
+        tOut = closestT;
+    }
+    return hit;
+}
+
+__device__ bool inline rayAABBIntersect(const Ray& r, const AABB& box, float& tOut) {
+    const Vec3 tmin = {
+        (box.aabb_min.x - r.origin.x) / r.dir.x,
+        (box.aabb_min.y - r.origin.y) / r.dir.y,
+        (box.aabb_min.z - r.origin.z) / r.dir.z,
+    };
+    const Vec3 tmax = {
+        (box.aabb_max.x - r.origin.x) / r.dir.x,
+        (box.aabb_max.y - r.origin.y) / r.dir.y,
+        (box.aabb_max.z - r.origin.z) / r.dir.z,
+    };
+
+    const float tnear = fmaxf(
+        fmaxf(fminf(tmin.x, tmax.x), fminf(tmin.y, tmax.y)),
+        fminf(tmin.z, tmax.z)
+    );
+
+    const float tfar = fminf(
+        fminf(fmaxf(tmin.x, tmax.x), fmaxf(tmin.y, tmax.y)),
+        fmaxf(tmin.z, tmax.z)
+    );
+
+    if (tnear <= tfar) {
+        tOut = tnear;
+        return true;
+    }
+    return false;
+}
+
+// per sphere: accept the NEAR root if it's inside (tmin, tmax);
+// otherwise try the FAR root
+__device__ inline bool hitSphereT(const Sphere& s, const Ray& r,
+                           float tmin, float tmax, float& tOut)
+{
+    Vec3 oc = r.origin - s.center;
+    float a = dot(r.dir, r.dir);
+    float b = 2.0f * dot(oc, r.dir);
+    float c = dot(oc, oc) - s.radius * s.radius;
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f) return false;
+    float sq = sqrtf(disc);
+    float t = (-b - sq) / (2.0f * a);
+    if (t < tmin || t > tmax) {
+        t = (-b + sq) / (2.0f * a);
+        if (t < tmin || t > tmax) return false;
+    }
+    tOut = t; return true;
+}
+
+
+__device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float &tOut) {
+    const BVHNode* stack[MAX_PTR_COUNT];
+    const BVHNode** stackPtr = stack;
+    *stackPtr++ = NULL;
+
+    const BVHNode* root = bvh.getRoot();
+    if(!rayAABBIntersect(r, root->bounds, tOut)) {
+        return false; // we dont even hit the outermost bounding box
+    }
+
+    bool hit = false;
+    float closestT = 1e20;
+
+    const BVHNode* node = root;
+
+    while (node != NULL) {
+        if(node->is_leaf()) {
+            float hitT;
+            if(rayLeafIntersect(r, bvh, node, hitT)) {
+                if(hitT < closestT) {
+                    closestT = hitT;
+                    hit = true;
+                }
+            }
+        }
+        else {
+            // it's an internal node, test children
+            const BVHNode* leftChild = bvh.getLeftChild(node);
+            const BVHNode* rightChild = bvh.getRightChild(node);
+
+            float tLeft, tRight;
+            bool hitLeft = rayAABBIntersect(r, leftChild->bounds, tLeft) && tLeft < closestT;
+            bool hitRight = rayAABBIntersect(r, rightChild->bounds, tRight) && tRight < closestT;
+
+            if (hitLeft && hitRight) {
+                if (tLeft < tRight) {
+                    // push the closer one so it gets processed first
+                    // further ones then get thrown away in the lines above
+                    *stackPtr++ = rightChild;
+                    *stackPtr++ = leftChild;
+                } else {
+                    *stackPtr++ = leftChild;
+                    *stackPtr++ = rightChild;
+                }
+            } else if (hitLeft) {
+                *stackPtr++ = leftChild;
+            } else if (hitRight) {
+                *stackPtr++ = rightChild;
+            }
+        }
+        node = *--stackPtr; // pop
+    }
+
+    if(hit) {
+        tOut = closestT;
+    }
+    return hit;
 }
 
 #endif

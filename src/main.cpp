@@ -4,15 +4,13 @@
 
 #include <renderer.hpp>
 
-
 int main() {
     int W = 1000;
     int H = 600;
     size_t bytes = size_t(W) * H * 3;
 
-    
     Renderer* r = renderer_create(W, H);
-    
+    build_bvh(r);
     std::vector<unsigned char> pixels(bytes);
     render(r, pixels);
     renderer_destroy(r);

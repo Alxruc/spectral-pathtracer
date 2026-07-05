@@ -24,3 +24,5 @@ compile_commands.json
 *.exe
 
 old_*.png
+
+data/
