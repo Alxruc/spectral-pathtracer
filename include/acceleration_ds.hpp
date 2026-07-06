@@ -3,7 +3,6 @@
 
 #include <hip/hip_runtime.h>
 #include <gpu_ds.hpp>
-#include <algorithm>
 #include <vector>
 #include <geometry.hpp>
 #include "materials.hpp"
@@ -43,7 +42,7 @@ struct DeviceBVH {
     BVHNode* nodes;
     uint32_t* tri_idx;
     Triangle* tris;
-    Material mat = make_lambertian(1.0);
+    Material mat = make_dielectric();
 
     __device__ const BVHNode* getRoot() const {
         return &nodes[0];

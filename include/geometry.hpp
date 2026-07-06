@@ -5,8 +5,20 @@
 #include <materials.hpp>
 #include <algorithm>
 
+// a smart person would have used float3 from the start
 struct Vec3 {
     float x,y,z;
+    __host__ __device__ Vec3() : x(0.0f), y(0.0f), z(0.0f) {}
+    __host__ __device__ Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
+    __host__ __device__ Vec3(const Vec3& other) : x(other.x), y(other.y), z(other.z) {}
+    __host__ __device__ Vec3& operator=(const Vec3& other) {
+        if (this != &other) {
+            x = other.x;
+            y = other.y;
+            z = other.z;
+        }
+        return *this;
+    }
     __host__ __device__ float  operator[](int i) const {
         return i == 0 ? x : (i == 1 ? y : z);
     }
@@ -33,12 +45,9 @@ struct Hit    { float t; Vec3 p; Vec3 n; bool front_face; const Material* mat; }
 
 struct Sphere { Vec3 center; float radius; Material mat; };
 
-struct Triangle { Vec3 a, b, c; };
-
-__host__ __device__ inline Vec3 getNormal(const Triangle& t) {
-    Vec3 ba = t.b - t.a;
-    Vec3 ca = t.c - t.a;
-    return cross(ba, ca);
+struct Triangle {
+    Vec3 a, b, c;
+    Vec3 normal;
 };
 
 

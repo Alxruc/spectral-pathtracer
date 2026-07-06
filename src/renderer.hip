@@ -1,8 +1,8 @@
 #include <hip/hip_runtime.h>
-#include <iostream>
 
 #include <gpu_ds.hpp>
 #include <geometry.hpp>
+#include <iterator>
 #include <renderer.hpp>
 #include <constants.hpp>
 #include <materials.hpp>
@@ -30,26 +30,15 @@ __device__ Vec3 sampleSphere(RNG& rng)
     return {r * cosf(phi), r * sinf(phi), z};      // already unit length
 }
 
-__device__ bool hitScene(const DeviceBVH& bvh, const Ray& r, Hit& h)
+__device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const Ray& r, Hit& h)
 {
+    const float TMIN = 1e-3f; // shadow-acne guard
     float closest = 1e30f;
     bool found = false;
 
-    Sphere reg = {
-        {4, 0, -4},
-        1.7,
-        make_lambertian(0.8)
-    };
-    Sphere reg2 = {
-        {-4, 0, -4},
-        1.5,
-        make_lambertian(1.0)
-    };
-    const Sphere scn[2] = {reg, reg2};
-    float t;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < n; ++i) {
         float t;
-        if (hitSphereT(scn[i], r, EPSILON, closest, t)) {
+        if (hitSphereT(scn[i], r, TMIN, closest, t)) {
             closest = t; found = true;
             h.t = t;
             h.p = r.origin + t * r.dir;
@@ -60,13 +49,14 @@ __device__ bool hitScene(const DeviceBVH& bvh, const Ray& r, Hit& h)
         }
     }
 
-
-    if(!found && rayBVHIntersect(r, bvh, t)) {
+    float t;
+    Vec3 tri_n;
+    if (rayBVHIntersect(r, bvh, t, tri_n) && t < closest) {
         found = true;
         h.t = t;
-        h.p = r.origin + t * r.dir;
-        h.n = {0, 0, 1};
-        h.front_face = true;
+        h.front_face = dot(r.dir, tri_n) < 0.0f;
+        h.n = h.front_face ? tri_n : -tri_n;
+        h.p = r.origin + t * r.dir + 1e-4f * h.n; //small offset for shadow acne
         h.mat = &bvh.mat;
     }
 
@@ -132,14 +122,14 @@ __device__ Vec3 refract(Vec3 dir, Vec3 normal, float eta) {
 }
 
 
-__device__ Vec3 traceRadiance(Ray ray, RNG& rng, const DeviceBVH& bvh)
+__device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const DeviceBVH& bvh)
 {
     float density = 0;
     float lamda = sampleWavelength(rng, density);
     float throughput = 1.0f / density;
     for (int depth = 0; depth < 64; ++depth) {
         Hit h;
-        if (!hitScene(bvh, ray, h))
+        if (!hitScene(scn, n, bvh, ray, h))
             return throughput * skyRadiance(ray.dir, lamda) * evaluateCMF(lamda);
 
         Vec3 d;
@@ -205,38 +195,30 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
 
     float aspect = float(width) / float(height);
     Vec3 sum = {0.0f, 0.0f, 0.0f};
+    const Vec3 worldUp = {0.0f, 1.0f, 0.0f};
 
-    // Sphere floor = {
-    //    {0,-100.7,-2},
-    //    100,
-    //    make_lambertian(0.8)
-    // };
-    // Sphere glass = {
-    //     {0,0,-3},
-    //     0.7,
-    //     make_dielectric()
-    // };
-    // Sphere reg = {
-    //     {1.2,0.5,-6},
-    //     0.9,
-    //     make_lambertian(0.4)
-    // };
+    Sphere floor = {
+       {0,-100.7,-2},
+       100,
+       make_lambertian(0.8)
+    };
 
-    // Sphere metal = {
-    //     {-1, 0.5, -2.5},
-    //     0.5,
-    //     make_metal(MetalType::Chrome, 0.1)
-    // };
+    Sphere scn[1] = {floor};
 
-    // Sphere scn[4] = {floor, glass, reg, metal};
+    const Vec3 targetPos = {0.0f, 0.0f, 0.0f};
+    const Vec3 cameraPos = {0.0f, 0.0f, -2.0f};
+
+    const Vec3 forward = normalize(targetPos - cameraPos);
+    const Vec3 right = normalize(cross(forward, worldUp));
+    const Vec3 up = cross(right, forward);
 
     for (int s = 0; s < spp; ++s) {
         float u = (px + rng.next()) / float(width);   // + jitter
         float v = (py + rng.next()) / float(height);
         Ray ray;
-        ray.origin = {0.0f, 0.0f, 1.8f};
-        ray.dir    = {(u - 0.5f) * 2.0f * aspect, (0.5f - v) * 2.0f, -1.0f};
-        sum = sum + traceRadiance(ray, rng, bvh);
+        ray.origin = cameraPos;
+        ray.dir    = (u - 0.5f) * 2.0f * aspect * right + (0.5f - v) * 2.0f * up + forward;
+        sum = sum + traceRadiance(ray, rng, scn, std::size(scn), bvh);
     }
 
     // picture too bright otherwise

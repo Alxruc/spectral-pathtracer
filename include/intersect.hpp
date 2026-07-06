@@ -6,6 +6,13 @@
 #include <constants.hpp>
 #include <acceleration_ds.hpp>
 
+// Determinant epsilon guards against division by zero/NaNs
+const float EPSILON_DET  = 1e-6f;
+// Barycentric epsilon guards against cracks/gaps at creases
+const float EPSILON_BARY = 1e-5f;
+// Distance epsilon guards against ray acne
+const float EPSILON_DIST = 1e-4f;
+
 // Möller-Trumbore intersection algorithm
 // P = A + u(B-A) + v(C-A) of triangle ABC
 // P = o + td
@@ -21,28 +28,29 @@ __device__ inline bool rayTriangleIntersect(const Triangle& tri, const Ray& r, f
     Vec3 r_e2 = cross(r.dir, e2);
     float det = dot(e1, r_e2);
 
-    if (fabsf(det) < EPSILON) return false; // ray is parallel to triangle
+    if (fabsf(det) < EPSILON_DET) return false; // ray is parallel to triangle
 
-    float inv_det = 1.0 / det;
+    float inv_det = 1.0f / det;
     Vec3 tri_to_ray = r.origin - tri.a;
     float u = inv_det * dot(tri_to_ray, r_e2);
 
-    if (u < -EPSILON || u - 1 > EPSILON) return false; // ray passes outside e2
+    if (u < -EPSILON_BARY || u - 1 > EPSILON_BARY) return false; // ray passes outside e2
 
     Vec3 ttr_e1 = cross(tri_to_ray, e1);
     float v = inv_det * dot(r.dir, ttr_e1);
 
-    if (v < -EPSILON || u + v - 1 > EPSILON) return false; // ray passes outside e1
+    if (v < -EPSILON_BARY || u + v - 1 > EPSILON_BARY) return false; // ray passes outside e1
 
     tOut = inv_det * dot(e2, ttr_e1);
-    if (tOut < EPSILON) return false;
+    if (tOut < EPSILON_DIST) return false;
     return true;
 }
 
 // we assume only leafs get sent here
-__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float& tOut) {
+__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float& tOut, Vec3& nOut) {
     float closestT = 1e20;
     float hit = false;
+    Vec3 closestN;
     for(uint32_t i = 0; i < node->tri_count; i++) {
         float hitT;
         uint32_t global_tri_idx = bvh.tri_idx[node->left_first + i];
@@ -50,6 +58,7 @@ __device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, cons
         if (rayTriangleIntersect(tri, r, hitT)) {
             if(hitT < closestT) {
                 closestT = hitT;
+                closestN = tri.normal;
             }
             hit = true;
         }
@@ -57,6 +66,7 @@ __device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, cons
 
     if(hit) {
         tOut = closestT;
+        nOut = closestN;
     }
     return hit;
 }
@@ -111,7 +121,7 @@ __device__ inline bool hitSphereT(const Sphere& s, const Ray& r,
 }
 
 
-__device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float &tOut) {
+__device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float &tOut, Vec3& nOut) {
     const BVHNode* stack[MAX_PTR_COUNT];
     const BVHNode** stackPtr = stack;
     *stackPtr++ = NULL;
@@ -123,15 +133,17 @@ __device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float
 
     bool hit = false;
     float closestT = 1e20;
-
+    Vec3 closestN;
     const BVHNode* node = root;
 
     while (node != NULL) {
         if(node->is_leaf()) {
             float hitT;
-            if(rayLeafIntersect(r, bvh, node, hitT)) {
+            Vec3 hitN;
+            if(rayLeafIntersect(r, bvh, node, hitT, hitN)) {
                 if(hitT < closestT) {
                     closestT = hitT;
+                    closestN = hitN;
                     hit = true;
                 }
             }
@@ -166,6 +178,7 @@ __device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float
 
     if(hit) {
         tOut = closestT;
+        nOut = closestN;
     }
     return hit;
 }

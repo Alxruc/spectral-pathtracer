@@ -27,7 +27,13 @@ std::vector<Triangle> loadObj(const std::string& path) {
                              attrib.vertices[3*vi + 1],
                              attrib.vertices[3*vi + 2] };
             };
-            tris.push_back({ vert(0), vert(1), vert(2) });
+            Vec3 v0 = vert(0);
+            Vec3 v1 = vert(1);
+            Vec3 v2 = vert(2);
+
+            // Calculate the geometric normal vector
+            Vec3 norm = normalize(cross(v1 - v0, v2 - v0));
+            tris.push_back({ v0, v1, v2, norm });
         }
     }
     return tris;
