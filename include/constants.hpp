@@ -2,8 +2,8 @@
 #define CONSTANTS_HPP
 
 // gpu
-const int BLOCK_SIZE = 16;
-const int SPP = 4096;
+const int BLOCK_SIZE = 32;
+const int SPP = 2048;
 const short MAX_PTR_COUNT = 64;
 
 // rendering

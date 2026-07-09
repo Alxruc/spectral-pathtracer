@@ -30,31 +30,92 @@ void BVH::build() {
 
 void BVH::update_node_bounds(uint32_t node_id) {
     BVHNode& node = nodes[node_id];
-    node.bounds.aabb_min = Vec3{1e20f, 1e20f, 1e20f};
-    node.bounds.aabb_max = Vec3{-1e20f, -1e20f, -1e20f};
+    node.bounds.reset();
     for (uint32_t i = 0; i < node.tri_count; i++) {
         const Triangle& t = tris[tri_idx[node.left_first + i]];
-        node.bounds.aabb_min = min(node.bounds.aabb_min, min(t.a, min(t.b, t.c)));
-        node.bounds.aabb_max = max(node.bounds.aabb_max, max(t.a, max(t.b, t.c)));
+        node.bounds.grow(t);
     }
+}
+
+float BVH::calculateNodeCost(const BVHNode& node) {
+    Vec3 e = node.bounds.aabb_max - node.bounds.aabb_min;
+    float surfaceArea = e.x * e.y + e.y * e.z + e.z * e.x;
+    return node.tri_count * surfaceArea;
+}
+
+// with help from jbikker article
+float BVH::findBestSplitPos(const BVHNode& node, float& splitPos, int& bestAxis) {
+    float bestCost = 1e30f;
+    for(int axis = 0; axis < 3; axis++) {
+        float boundsMin = 1e30f;
+        float boundsMax = -1e30f;
+        for(uint32_t i = 0; i < node.tri_count; i++) {
+            uint32_t currTriIdx = tri_idx[node.left_first + i];
+            boundsMin = fminf(boundsMin, centroids[currTriIdx][axis]);
+            boundsMax = fmaxf(boundsMax, centroids[currTriIdx][axis]);
+        }
+        if(boundsMin == boundsMax) continue;
+
+        Bin bin[INTERVAL_NUMBER];
+        float scale = INTERVAL_NUMBER / (boundsMax - boundsMin);
+        for(uint32_t i = 0; i < node.tri_count; i++) {
+            uint32_t currTriIdx = tri_idx[node.left_first + i];
+            uint32_t binIdx = (uint32_t)fminf(INTERVAL_NUMBER - 1,
+                (int)((centroids[currTriIdx][axis] - boundsMin) * scale));
+
+            bin[binIdx].tri_count++;
+            bin[binIdx].bounds.grow(tris[currTriIdx]);
+        }
+
+        // gather data for the n-1 planes between the n bins
+        float leftArea[INTERVAL_NUMBER - 1], rightArea[INTERVAL_NUMBER - 1];
+        int leftCount[INTERVAL_NUMBER - 1], rightCount[INTERVAL_NUMBER - 1];
+        AABB leftBox, rightBox;
+        int leftSum = 0, rightSum = 0;
+        for (uint32_t i = 0; i < INTERVAL_NUMBER - 1; i++)
+        {
+            leftSum += bin[i].tri_count;
+            leftCount[i] = leftSum;
+            leftBox.grow( bin[i].bounds );
+            leftArea[i] = leftBox.area();
+            rightSum += bin[INTERVAL_NUMBER - 1 - i].tri_count;
+            rightCount[INTERVAL_NUMBER - 2 - i] = rightSum;
+            rightBox.grow( bin[INTERVAL_NUMBER - 1 - i].bounds );
+            rightArea[INTERVAL_NUMBER - 2 - i] = rightBox.area();
+        }
+
+        // calculate SAH cost for the n-1 planes
+        scale = (boundsMax - boundsMin) / INTERVAL_NUMBER;
+        for (uint32_t i = 0; i < INTERVAL_NUMBER - 1; i++) {
+            float planeCost = leftCount[i] * leftArea[i] + rightCount[i] * rightArea[i];
+            if (planeCost < bestCost) {
+                bestAxis = axis;
+                splitPos = boundsMin + scale * (i + 1);
+                bestCost = planeCost;
+            }
+        }
+    }
+
+    return bestCost;
 }
 
 void BVH::subdivide(uint32_t node_id) {
     BVHNode& node = nodes[node_id];
     if (node.tri_count <= 2) return;
 
-    Vec3 extent = node.bounds.aabb_max - node.bounds.aabb_min;
-    int axis = 0;
-    if (extent.y > extent.x) axis = 1;
-    if (extent.z > extent[axis]) axis = 2;
-    float split_pos = node.bounds.aabb_min[axis] + extent[axis] * 0.5f;
+    int bestAxis = 0;
+    float splitPos = 0;
+    float bestCost = findBestSplitPos(node, splitPos, bestAxis);
 
-    uint32_t i = node.left_first;
-    uint32_t j = node.left_first + node.tri_count - 1;
+    float noSplitCost = calculateNodeCost(node);
+    if (bestCost >= noSplitCost) return;
+
+    uint32_t i = (int32_t)node.left_first;
+    uint32_t j = (int32_t)(node.left_first + node.tri_count - 1);
 
     while (i <= j) {
         Vec3 c = centroids[tri_idx[i]];
-        if (c[axis] < split_pos) {
+        if (c[bestAxis] < splitPos) {
             i++;
         }
         else {
@@ -81,36 +142,4 @@ void BVH::subdivide(uint32_t node_id) {
     update_node_bounds(left_i + 1);
     subdivide(left_i);
     subdivide(left_i + 1);
-}
-
-
-bool isPermutation(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
-    if (a.size() != b.size()) return false;
-    std::unordered_map<uint32_t, uint32_t> counts;
-    for(auto i : a) {
-        counts[i]++;
-    }
-    for(auto i : b) {
-        if (counts[i] == 0) return false;
-        counts[i]--;
-    }
-
-    return true;
-}
-
-// returns true if valid BVH (for testing)
-bool BVH::isPermutation() {
-    // A permutation of 0 to N-1 must have exactly N unique elements,
-    // and every element must be strictly less than N.
-    std::vector<bool> seen(tri_idx.size(), false);
-
-    for (uint32_t idx : tri_idx) {
-        // If an index is out of bounds, or we've seen it before, it's invalid
-        if (idx >= tri_idx.size() || seen[idx]) {
-            return false;
-        }
-        seen[idx] = true;
-    }
-
-    return true;
 }

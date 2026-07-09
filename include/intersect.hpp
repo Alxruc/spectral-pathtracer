@@ -13,6 +13,11 @@ const float EPSILON_BARY = 1e-5f;
 // Distance epsilon guards against ray acne
 const float EPSILON_DIST = 1e-4f;
 
+struct StackNode {
+    const BVHNode* node;
+    float t;
+};
+
 // Möller-Trumbore intersection algorithm
 // P = A + u(B-A) + v(C-A) of triangle ABC
 // P = o + td
@@ -47,8 +52,8 @@ __device__ inline bool rayTriangleIntersect(const Triangle& tri, const Ray& r, f
 }
 
 // we assume only leafs get sent here
-__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float& tOut, Vec3& nOut) {
-    float closestT = 1e20;
+__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float globalClosestT, float& tOut, Vec3& nOut) {
+    float closestT = globalClosestT;
     float hit = false;
     Vec3 closestN;
     for(uint32_t i = 0; i < node->tri_count; i++) {
@@ -93,8 +98,8 @@ __device__ bool inline rayAABBIntersect(const Ray& r, const AABB& box, float& tO
         fmaxf(tmin.z, tmax.z)
     );
 
-    if (tnear <= tfar) {
-        tOut = tnear;
+    if (tnear <= tfar && tfar >= 0.0f) {
+        tOut = tnear; // Clamp to 0 if ray is inside the box
         return true;
     }
     return false;
@@ -122,12 +127,12 @@ __device__ inline bool hitSphereT(const Sphere& s, const Ray& r,
 
 
 __device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float &tOut, Vec3& nOut) {
-    const BVHNode* stack[MAX_PTR_COUNT];
-    const BVHNode** stackPtr = stack;
-    *stackPtr++ = NULL;
+    StackNode stack[MAX_PTR_COUNT];
+    StackNode* stackPtr = stack;
 
     const BVHNode* root = bvh.getRoot();
-    if(!rayAABBIntersect(r, root->bounds, tOut)) {
+    float tRoot;
+    if(!rayAABBIntersect(r, root->bounds, tRoot)) {
         return false; // we dont even hit the outermost bounding box
     }
 
@@ -140,13 +145,14 @@ __device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float
         if(node->is_leaf()) {
             float hitT;
             Vec3 hitN;
-            if(rayLeafIntersect(r, bvh, node, hitT, hitN)) {
+            if(rayLeafIntersect(r, bvh, node, closestT, hitT, hitN)) {
                 if(hitT < closestT) {
                     closestT = hitT;
                     closestN = hitN;
                     hit = true;
                 }
             }
+            node = nullptr; // finished this leaf force a pop
         }
         else {
             // it's an internal node, test children
@@ -159,21 +165,30 @@ __device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float
 
             if (hitLeft && hitRight) {
                 if (tLeft < tRight) {
-                    // push the closer one so it gets processed first
-                    // further ones then get thrown away in the lines above
-                    *stackPtr++ = rightChild;
-                    *stackPtr++ = leftChild;
+                    // push the further child onto the stack with its intersection distance
+                    // immediately descend into the closer child
+                    *stackPtr++ = StackNode{ rightChild, tRight };
+                    node = leftChild;
                 } else {
-                    *stackPtr++ = leftChild;
-                    *stackPtr++ = rightChild;
+                    *stackPtr++ = StackNode{ leftChild, tLeft };
+                    node = rightChild;
                 }
             } else if (hitLeft) {
-                *stackPtr++ = leftChild;
+                node = leftChild;
             } else if (hitRight) {
-                *stackPtr++ = rightChild;
+                node = rightChild;
+            } else {
+                node = nullptr;
             }
         }
-        node = *--stackPtr; // pop
+        // stack pruning
+        while (node == nullptr && stackPtr > stack) {
+            StackNode popped = *--stackPtr;
+            if (popped.t < closestT) {
+                node = popped.node; // Found a valid node to traverse next
+            }
+            // if popped.t >= closestT, node remains nullptr, and we loop to pop again
+        }
     }
 
     if(hit) {
