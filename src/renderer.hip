@@ -1,5 +1,6 @@
 #include <hip/hip_runtime.h>
 
+#include <complex>
 #include <gpu_ds.hpp>
 #include <geometry.hpp>
 #include <iterator>
@@ -22,12 +23,55 @@ struct Renderer {
     Scene scene;
 };
 
+// (5, 5, 2) normalized
+__device__ const Vec3 SUN_DIR = {0.680414f, 0.680414f, 0.272166f};
+__device__ const float SUN_TEMPERATURE = 5778; // K
+
+// for our sun to be brighter than the sky
+// number pulled out from thin air for now just based on vibes
+// to make it look semi right
+__device__ const float SUN_SCALE = 10e4;
+
+// blackbody(550nm, 5778) precomputed
+__device__ const float SUN_NORMALIZING = 2.586 * 10e13;
+
+// explained in light sampling function where they are used
+__device__ const float COS_SUN_RADIUS = 0.9999893;
+__device__ const float ONE_OVER_OMEGA_SUN = 14'900;
+
+
 __device__ Vec3 sampleSphere(RNG& rng)
 {
     float z   = 1.0f - 2.0f * rng.next();          // uniform in [-1, 1]
     float r   = sqrtf(fmaxf(0.0f, 1.0f - z * z));
     float phi = TWO_PI * rng.next();       // 2pi times u
     return {r * cosf(phi), r * sinf(phi), z};      // already unit length
+}
+
+__device__ Vec3 sampleSunDisk(RNG& rng)
+{
+    // Two uniform random numbers
+    float u1 = rng.next();
+    float u2 = rng.next();
+
+    // Uniformly sample cos(theta) between cos(sun radius) and 1.
+    // Uniform in cos_theta <=> uniform over solid angle of the cone.
+    float cos_theta = 1.0f - u1 * (1.0f - COS_SUN_RADIUS);
+    float sin_theta = sqrtf(fmaxf(0.0f, 1.0f - cos_theta * cos_theta));
+    float phi = TWO_PI * u2;
+
+    // Direction in local frame where +z = SUN_DIR
+    float x = sin_theta * cosf(phi);
+    float y = sin_theta * sinf(phi);
+    float z = cos_theta;
+
+    // Build an orthonormal basis around SUN_DIR
+    // SUN_DIR is assumed to be normalized here
+    Vec3 a = fabsf(SUN_DIR.x) > 0.9f ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
+    Vec3 u = normalize(cross(a, SUN_DIR));
+    Vec3 v = cross(SUN_DIR, u);
+
+    return normalize(x * u + y * v + z * SUN_DIR);
 }
 
 __device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const Ray& r, Hit& h)
@@ -63,12 +107,31 @@ __device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const R
     return found;
 }
 
-__device__ float skyRadiance(Vec3 dir, float lamda)
-{
+__device__ float blackbody(float lamda, float temperature) {
+    float lamda_meters = lamda * 1e-9;
+
+    float l5 = powf(lamda_meters, 5.0);
+    float exponent = COEF_C2 / (lamda_meters * temperature);
+
+    // protect against exp() overflow directly in float
+    if (exponent > 88.0f) { // e^88 is near the upper limit of float (~3.4e38)
+        return 0.0f;
+    }
+
+    float radiance = COEF_C1 / (l5 * (expf(exponent) - 1.0f));
+
+    return radiance;
+}
+
+__device__ float skyRadiance(Vec3 dir, float lamda) {
     Vec3 d = normalize(dir);
     float s = 0.5f * (d.y + 1.0f);
     float radiance = (1.0f - s) * 1.0f + s * 0.7f;
     return radiance * powf(NORMALIZATION_WAVELENGTH_NM / lamda, 4.0); // 550nm as baseline as human eye
+}
+
+__device__ float sunRadiance(float lamda) {
+    return SUN_SCALE * blackbody(lamda, SUN_TEMPERATURE) / SUN_NORMALIZING;
 }
 
 
@@ -121,16 +184,40 @@ __device__ Vec3 refract(Vec3 dir, Vec3 normal, float eta) {
     return eta * dir - (eta * dot_N_I + sqrtf(k)) * normal;
 }
 
+__device__ float light_pdf(Vec3 omega) {
+    // If we land inside the sun's disk, meaning a cone spanning about 0.53 degrees
+    // of angular diameter (we halve it for the radius and then compute cos(angle)),
+    // then we return the density function of the light, which
+    // is 1 / (size of sun as seen from Earth measured as area on the unit sphere)
+    // often denoted as 1 / OMEGA_sun
+    // Where OMEGA_sun = 6.7 * 10^-5 steredian
+    if (dot(omega, SUN_DIR) > COS_SUN_RADIUS)
+        return ONE_OVER_OMEGA_SUN;
+    return 0.0;
+}
+
 
 __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const DeviceBVH& bvh)
 {
     float density = 0;
     float lamda = sampleWavelength(rng, density);
+
+    float radiance = 0;
     float throughput = 1.0f / density;
-    for (int depth = 0; depth < 64; ++depth) {
+    const float prev_brdf_density = 1 / TWO_PI; // because we sample a constant hemisphere for bounces this is constant for now
+    for (int depth = 0; depth < 64; depth++) {
         Hit h;
-        if (!hitScene(scn, n, bvh, ray, h))
-            return throughput * skyRadiance(ray.dir, lamda) * evaluateCMF(lamda);
+        if (!hitScene(scn, n, bvh, ray, h)) {
+            float w = 1;
+            if (ray.prev_was_diffuse) {
+                float light_density = light_pdf(ray.dir);
+                // if light_density = 0, then w = 1 so our radiance doesnt get affected
+                w = prev_brdf_density / (prev_brdf_density + light_density);
+            }
+            radiance += throughput * skyRadiance(ray.dir, lamda) * w;
+            break;
+        }
+
 
         Vec3 d;
         // we hit glass
@@ -153,6 +240,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const
                 d = refract(unit, h.n, eta);
             }
             throughput *= h.mat->dielectric.albedo;
+            ray.prev_was_diffuse = false;
         }
         // we hit metal
         else if (h.mat->type == MatType::Metal) {
@@ -165,20 +253,32 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const
             float reflectance = r_0 + (1-r_0) * powf((1-cos_t), 5);
 
             d = reflect(unit, h.n) + (h.mat->metal.roughness * sampleSphere(rng));
-
             throughput *= reflectance;
+            ray.prev_was_diffuse = false;
         }
         // we hit other materials
         else {
+            Vec3 l = sampleSunDisk(rng);
+            Ray shadow_ray = {h.p + EPSILON * h.n, l, false};
+            Hit throwaway;
+            if(dot(l, h.n) > 0 && !hitScene(scn, n, bvh, shadow_ray, throwaway)) {
+                radiance += throughput
+                    * (h.mat->lambertian.albedo) / PI
+                    * sunRadiance(lamda)
+                    * dot(l, h.n)
+                    / (ONE_OVER_OMEGA_SUN + prev_brdf_density);
+            }
+
             d = sampleSphere(rng);
             if (dot(d, h.n) < 0.0f) d = -1.0f * d;
             throughput *= 2.0f * h.mat->lambertian.albedo * dot(d, h.n);
+            ray.prev_was_diffuse = true;
         }
 
         ray.origin = h.p;
         ray.dir    = d;
     }
-    return {0.0f, 0.0f, 0.0f};
+    return radiance * evaluateCMF(lamda);
 }
 
 __device__ float clamp(float d, float min, float max) {
