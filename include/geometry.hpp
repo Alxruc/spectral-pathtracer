@@ -6,6 +6,8 @@
 #include <algorithm>
 
 // a smart person would have used float3 from the start
+// TODO a smart person will switch to float3, as a ??? person started using float4 because they
+// were to lazy to write Vec4
 struct Vec3 {
     float x,y,z;
     __host__ __device__ constexpr Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
