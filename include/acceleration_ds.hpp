@@ -64,7 +64,7 @@ struct DeviceBVH {
     BVHNode* nodes;
     uint32_t* tri_idx;
     Triangle* tris;
-    Material mat = make_dielectric();
+    Material mat = make_lambertian(0.8);
 
     __device__ const BVHNode* getRoot() const {
         return &nodes[0];
