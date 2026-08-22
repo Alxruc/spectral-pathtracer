@@ -24,23 +24,6 @@ struct Renderer {
     Scene scene;
 };
 
-// (5, 5, 2) normalized
-__device__ const Vec3 SUN_DIR = {0.680414f, 0.680414f, 0.272166f};
-__device__ const float SUN_TEMPERATURE = 5778; // K
-
-// for our sun to be brighter than the sky
-// number pulled out from thin air for now just based on vibes
-// to make it look semi right
-__device__ const float SUN_SCALE = 10e4;
-
-// blackbody(550nm, 5778) precomputed
-__device__ const float SUN_NORMALIZING = 2.586 * 10e13;
-
-// explained in light sampling function where they are used
-__device__ const float COS_SUN_RADIUS = 0.9999893;
-__device__ const float ONE_OVER_OMEGA_SUN = 14'900;
-
-
 __device__ Vec3 sampleSphere(RNG& rng)
 {
     float z   = 1.0f - 2.0f * rng.next();          // uniform in [-1, 1]
