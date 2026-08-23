@@ -21,7 +21,7 @@ __device__ float3 convertXYZtoRGB(float X, float Y, float Z) {
     return make_float3(R, G, B);
 }
 
-__device__ Vec3 XYZ_to_sRGB(Vec3 xyz) {
+__device__ float3 XYZ_to_sRGB(float3 xyz) {
     // cnvert to linear sRGB
     float3 lin = convertXYZtoRGB(xyz.x, xyz.y, xyz.z);
 

@@ -23,16 +23,16 @@ std::vector<Triangle> loadObj(const std::string& path) {
         for (size_t i = 0; i + 2 < idx.size(); i += 3) {
             auto vert = [&](size_t k) {
                 int vi = idx[i + k].vertex_index;
-                return Vec3{ attrib.vertices[3*vi + 0],
+                return float3{ attrib.vertices[3*vi + 0],
                              attrib.vertices[3*vi + 1],
                              attrib.vertices[3*vi + 2] };
             };
-            Vec3 v0 = vert(0);
-            Vec3 v1 = vert(1);
-            Vec3 v2 = vert(2);
+            float3 v0 = vert(0);
+            float3 v1 = vert(1);
+            float3 v2 = vert(2);
 
             // Calculate the geometric normal vector
-            Vec3 norm = normalize(cross(v1 - v0, v2 - v0));
+            float3 norm = normalize(cross(v1 - v0, v2 - v0));
             tris.push_back({ v0, v1, v2, norm });
         }
     }

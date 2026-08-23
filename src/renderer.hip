@@ -24,7 +24,7 @@ struct Renderer {
     Scene scene;
 };
 
-__device__ Vec3 sampleSphere(RNG& rng)
+__device__ float3 sampleSphere(RNG& rng)
 {
     float z   = 1.0f - 2.0f * rng.next();          // uniform in [-1, 1]
     float r   = sqrtf(fmaxf(0.0f, 1.0f - z * z));
@@ -32,7 +32,7 @@ __device__ Vec3 sampleSphere(RNG& rng)
     return {r * cosf(phi), r * sinf(phi), z};      // already unit length
 }
 
-__device__ Vec3 sampleSunDisk(RNG& rng)
+__device__ float3 sampleSunDisk(RNG& rng)
 {
     // Two uniform random numbers
     float u1 = rng.next();
@@ -51,9 +51,9 @@ __device__ Vec3 sampleSunDisk(RNG& rng)
 
     // Build an orthonormal basis around SUN_DIR
     // SUN_DIR is assumed to be normalized here
-    Vec3 a = fabsf(SUN_DIR.x) > 0.9f ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
-    Vec3 u = normalize(cross(a, SUN_DIR));
-    Vec3 v = cross(SUN_DIR, u);
+    float3 a = fabsf(SUN_DIR.x) > 0.9f ? float3(0, 1, 0) : float3(1, 0, 0);
+    float3 u = normalize(cross(a, SUN_DIR));
+    float3 v = cross(SUN_DIR, u);
 
     return normalize(x * u + y * v + z * SUN_DIR);
 }
@@ -70,7 +70,7 @@ __device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const R
             closest = t; found = true;
             h.t = t;
             h.p = r.origin + t * r.dir;
-            Vec3 outward = (1.0f / scn[i].radius) * (h.p - scn[i].center);
+            float3 outward = (1.0f / scn[i].radius) * (h.p - scn[i].center);
             h.front_face = dot(r.dir, outward) < 0.0f;
             h.n   = h.front_face ? outward : -outward;
             h.mat = &scn[i].mat;
@@ -78,7 +78,7 @@ __device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const R
     }
 
     float t;
-    Vec3 tri_n;
+    float3 tri_n;
     if (rayBVHIntersect(r, bvh, t, tri_n) && t < closest) {
         found = true;
         h.t = t;
@@ -107,8 +107,8 @@ __device__ float blackbody(float lamda, float temperature) {
     return radiance;
 }
 
-__device__ float skyRadiance(Vec3 dir, float lamda) {
-    Vec3 d = normalize(dir);
+__device__ float skyRadiance(float3 dir, float lamda) {
+    float3 d = normalize(dir);
     float s = 0.5f * (d.y + 1.0f);
     float radiance = (1.0f - s) * 1.0f + s * 0.7f;
     return radiance * powf(NORMALIZATION_WAVELENGTH_NM / lamda, 4.0); // 550nm as baseline as human eye
@@ -118,8 +118,8 @@ __device__ float sunRadiance(float lamda) {
     return SUN_SCALE * blackbody(lamda, SUN_TEMPERATURE) / SUN_NORMALIZING;
 }
 
-__device__ float4 skyRadiance(Vec3 dir, float4 lambdas) {
-    Vec3 d = normalize(dir);
+__device__ float4 skyRadiance(float3 dir, float4 lambdas) {
+    float3 d = normalize(dir);
     float s = 0.5f * (d.y + 1.0f);
     float base_radiance = (1.0f - s) * 1.0f + s * 0.7f;
 
@@ -152,7 +152,7 @@ __device__ float4 sunRadiance(float4 lamdas) {
 
 // Simple Analytic Approximations to the CIE XYZ Color Matching Functions
 // Wyman et al
-__device__ Vec3 evaluateCMF(float lamda) {
+__device__ float3 evaluateCMF(float lamda) {
     float ln_lamda = logf(lamda);
     float x = 1.065 * expf(-0.5 * powf(((lamda - 595.8) / 33.33), 2)) + 0.366 * expf(-0.5 * powf(((lamda-446.8) / 19.44), 2));
     float y = 1.014 * expf(-0.5 * powf(((ln_lamda - logf(556.3)) / 0.075), 2));
@@ -173,18 +173,18 @@ __device__ float schlick(float cos_t, float eta) {
     return r + (1-r) * powf((1-cos_t), 5);
 }
 
-__device__ Vec3 reflect(Vec3 dir, Vec3 normal) {
+__device__ float3 reflect(float3 dir, float3 normal) {
     return dir - 2.0f * (dot(dir, normal)) * normal;
 }
 
-__device__ Vec3 refract(Vec3 dir, Vec3 normal, float eta) {
+__device__ float3 refract(float3 dir, float3 normal, float eta) {
     // standard opengl refract formula
     float dot_N_I = dot(normal, dir);
     float k = 1.0f - eta * eta * (1.0f - dot_N_I * dot_N_I);
     return eta * dir - (eta * dot_N_I + sqrtf(k)) * normal;
 }
 
-__device__ float light_pdf(Vec3 omega) {
+__device__ float light_pdf(float3 omega) {
     // If we land inside the sun's disk, meaning a cone spanning about 0.53 degrees
     // of angular diameter (we halve it for the radius and then compute cos(angle)),
     // then we return the density function of the light, which
@@ -197,7 +197,7 @@ __device__ float light_pdf(Vec3 omega) {
 }
 
 
-__device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const DeviceBVH& bvh)
+__device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const DeviceBVH& bvh)
 {
     float4 lamdas = sampleHeroWavelength(rng);
     float4 radiance = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -217,7 +217,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const
             radiance += throughput * sky_rad * w;
             break;
         }
-        Vec3 d;
+        float3 d;
         // we hit glass
         if (h.mat->type == MatType::Dielectric) {
             // TODO fix for hero wavelengths
@@ -229,7 +229,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const
             // eta = n_from / n_to
             float eta = h.front_face ? 1.0 / ior : ior;
 
-            Vec3  unit = normalize(ray.dir);
+            float3  unit = normalize(ray.dir);
             float cos_t = fminf(dot(-1.0f * unit, h.n), 1.0f);
             float sin_t = sqrtf(1.0f - cos_t * cos_t);
 
@@ -255,7 +255,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const
             float k = getExtinctionIndex(h.mat->metal.metal, lamdas.x);
             float r_0 = (powf(n-1, 2) + powf(k, 2)) / (powf(n+1, 2) + powf(k,2));
 
-            Vec3  unit = normalize(ray.dir);
+            float3  unit = normalize(ray.dir);
             float cos_t = fminf(dot(-1.0f * unit, h.n), 1.0f);
             float reflectance = r_0 + (1-r_0) * powf((1-cos_t), 5);
 
@@ -265,7 +265,7 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const
         }
         // we hit other materials
         else {
-            Vec3 l = sampleSunDisk(rng);
+            float3 l = sampleSunDisk(rng);
             Ray shadow_ray = {h.p + EPSILON * h.n, l, false};
             Hit throwaway;
             float n_dot_l = dot(l, h.n);
@@ -293,13 +293,13 @@ __device__ Vec3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const
     constexpr float CIE_Y_INTEGRAL = 106.856895f;
     const float spectral_norm = 1.0f / (4.0f * UNIFORM_DENSITY * CIE_Y_INTEGRAL);
     
-    Vec3 cmf0 = evaluateCMF(lamdas.x);
-    Vec3 cmf1 = evaluateCMF(lamdas.y);
-    Vec3 cmf2 = evaluateCMF(lamdas.z);
-    Vec3 cmf3 = evaluateCMF(lamdas.w);
+    float3 cmf0 = evaluateCMF(lamdas.x);
+    float3 cmf1 = evaluateCMF(lamdas.y);
+    float3 cmf2 = evaluateCMF(lamdas.z);
+    float3 cmf3 = evaluateCMF(lamdas.w);
 
     // Sum all 4 spectral contributions into the XYZ accumulator
-    Vec3 xyz = spectral_norm * 
+    float3 xyz = spectral_norm * 
                 (radiance.x * cmf0 + 
                 radiance.y * cmf1 + 
                 radiance.z * cmf2 + 
@@ -321,8 +321,8 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
     RNG rng{ uint32_t(py) * uint32_t(width) + uint32_t(px) };
 
     float aspect = float(width) / float(height);
-    Vec3 sum = {0.0f, 0.0f, 0.0f};
-    const Vec3 worldUp = {0.0f, 1.0f, 0.0f};
+    float3 sum = {0.0f, 0.0f, 0.0f};
+    const float3 worldUp = {0.0f, 1.0f, 0.0f};
 
     Sphere floor = {
        {0,-100.7,-2},
@@ -332,12 +332,12 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
 
     Sphere scn[1] = {floor};
 
-    const Vec3 targetPos = {0.0f, 0.0f, 0.0f};
-    const Vec3 cameraPos = {0.0f, 0.0f, -2.0f};
+    const float3 targetPos = {0.0f, 0.0f, 0.0f};
+    const float3 cameraPos = {0.0f, 0.0f, -2.0f};
 
-    const Vec3 forward = normalize(targetPos - cameraPos);
-    const Vec3 right = normalize(cross(forward, worldUp));
-    const Vec3 up = cross(right, forward);
+    const float3 forward = normalize(targetPos - cameraPos);
+    const float3 right = normalize(cross(forward, worldUp));
+    const float3 up = cross(right, forward);
 
     for (int s = 0; s < spp; ++s) {
         float u = (px + rng.next()) / float(width);   // + jitter
@@ -348,9 +348,9 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
         sum = sum + traceRadiance(ray, rng, scn, std::size(scn), bvh);
     }
 
-    Vec3 avg_xyz = sum / float(spp);
+    float3 avg_xyz = sum / float(spp);
 
-    Vec3 rgb = XYZ_to_sRGB(avg_xyz);
+    float3 rgb = XYZ_to_sRGB(avg_xyz);
 
     int idx = 3 * (py * width + px);
     img[idx + 0] = (unsigned char)(255.999f * clamp(rgb.x, 0.0, 1.0));

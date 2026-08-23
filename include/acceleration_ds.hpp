@@ -10,20 +10,20 @@
 const uint32_t INTERVAL_NUMBER = 8;
 
 struct AABB {
-    Vec3 aabb_min{ 1e20f,  1e20f,  1e20f};
-    Vec3 aabb_max{-1e20f, -1e20f, -1e20f};
+    float3 aabb_min{ 1e20f,  1e20f,  1e20f};
+    float3 aabb_max{-1e20f, -1e20f, -1e20f};
     void reset() {
-        aabb_min = Vec3{ 1e20f,  1e20f,  1e20f};
-        aabb_max = Vec3{-1e20f, -1e20f, -1e20f};
+        aabb_min = float3{ 1e20f,  1e20f,  1e20f};
+        aabb_max = float3{-1e20f, -1e20f, -1e20f};
     }
-    void grow(const Vec3& p) { aabb_min = min(aabb_min, p), aabb_max = max(aabb_max, p); }
+    void grow(const float3& p) { aabb_min = min(aabb_min, p), aabb_max = max(aabb_max, p); }
     void grow(const AABB& other) {
         aabb_min = min(aabb_min, other.aabb_min);
         aabb_max = max(aabb_max, other.aabb_max);
     }
     void grow(const Triangle& t) { grow(t.a); grow(t.b); grow(t.c); }
     float area() {
-        Vec3 e = aabb_max - aabb_min;
+        float3 e = aabb_max - aabb_min;
         return e.x * e.y + e.y * e.z + e.z * e.x;
     }
 };
@@ -52,7 +52,7 @@ public:
     __host__ const BVHNode* getRoot() const { return &nodes[0]; }
 private:
     uint32_t nodes_used = 0;
-    std::vector<Vec3> centroids;
+    std::vector<float3> centroids;
 
     float findBestSplitPos(const struct BVHNode& node, float& splitPos, int& bestAxis);
     float calculateNodeCost(const struct BVHNode& node);

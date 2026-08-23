@@ -38,7 +38,7 @@ void BVH::update_node_bounds(uint32_t node_id) {
 }
 
 float BVH::calculateNodeCost(const BVHNode& node) {
-    Vec3 e = node.bounds.aabb_max - node.bounds.aabb_min;
+    float3 e = node.bounds.aabb_max - node.bounds.aabb_min;
     float surfaceArea = e.x * e.y + e.y * e.z + e.z * e.x;
     return node.tri_count * surfaceArea;
 }
@@ -114,7 +114,7 @@ void BVH::subdivide(uint32_t node_id) {
     uint32_t j = (int32_t)(node.left_first + node.tri_count - 1);
 
     while (i <= j) {
-        Vec3 c = centroids[tri_idx[i]];
+        float3 c = centroids[tri_idx[i]];
         if (c[bestAxis] < splitPos) {
             i++;
         }

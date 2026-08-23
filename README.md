@@ -15,9 +15,10 @@ A spectral path tracer targeting AMD GPUs via HIP/ROCm.
 ## Build
 
 On AMD the GPU architecture is auto-detected, no flags needed:
+(except on WSL there you need to add it manually, see below)
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
@@ -25,6 +26,7 @@ On CPUs
 ```bash
 cmake -S . -B build_cpu \
   -DGPU_RUNTIME=CPU \
+  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="/path/to/hip-cpu/install"
 
 cmake --build build_cpu -j
@@ -34,14 +36,16 @@ To target a specific card or backend, pass the arguments:
 (NVIDIA is untested)
 
 ```bash
-# A different AMD card (see your arch with: rocminfo | grep gfx)
-cmake -S . -B build -DGPU_TARGETS=gfx@@@@
+# A different AMD card (replace gfx1201 with your card, see your arch with: rocminfo | grep gfx)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGPU_TARGETS=gfx1201
 ```
 
 ```bash
 # NVIDIA: set the backend and compute capability (e.g. 120 = consumer Blackwell)
-cmake -S . -B build -DGPU_RUNTIME=CUDA -DGPU_TARGETS=120
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGPU_RUNTIME=CUDA -DGPU_TARGETS=120
 ```
+
+A Debug build can be slower since HIP's vector-type math isn't as aggressively inlined/unrolled at `-O`/`-O1`.
 
 ## Run
 

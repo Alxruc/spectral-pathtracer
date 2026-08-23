@@ -23,25 +23,25 @@ struct StackNode {
 // P = o + td
 // => o - A = -td + u(B-A) + v(C-A)
 __device__ inline bool rayTriangleIntersect(const Triangle& tri, const Ray& r, float& tOut) {
-    Vec3 v1 = tri.a;
-    Vec3 v2 = tri.b;
-    Vec3 v3 = tri.c;
+    float3 v1 = tri.a;
+    float3 v2 = tri.b;
+    float3 v3 = tri.c;
 
-    Vec3 e1 = v2 - v1;
-    Vec3 e2 = v3- v1;
+    float3 e1 = v2 - v1;
+    float3 e2 = v3- v1;
 
-    Vec3 r_e2 = cross(r.dir, e2);
+    float3 r_e2 = cross(r.dir, e2);
     float det = dot(e1, r_e2);
 
     if (fabsf(det) < EPSILON_DET) return false; // ray is parallel to triangle
 
     float inv_det = 1.0f / det;
-    Vec3 tri_to_ray = r.origin - tri.a;
+    float3 tri_to_ray = r.origin - tri.a;
     float u = inv_det * dot(tri_to_ray, r_e2);
 
     if (u < -EPSILON_BARY || u - 1 > EPSILON_BARY) return false; // ray passes outside e2
 
-    Vec3 ttr_e1 = cross(tri_to_ray, e1);
+    float3 ttr_e1 = cross(tri_to_ray, e1);
     float v = inv_det * dot(r.dir, ttr_e1);
 
     if (v < -EPSILON_BARY || u + v - 1 > EPSILON_BARY) return false; // ray passes outside e1
@@ -52,10 +52,10 @@ __device__ inline bool rayTriangleIntersect(const Triangle& tri, const Ray& r, f
 }
 
 // we assume only leafs get sent here
-__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float globalClosestT, float& tOut, Vec3& nOut) {
+__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float globalClosestT, float& tOut, float3& nOut) {
     float closestT = globalClosestT;
     float hit = false;
-    Vec3 closestN;
+    float3 closestN;
     for(uint32_t i = 0; i < node->tri_count; i++) {
         float hitT;
         uint32_t global_tri_idx = bvh.tri_idx[node->left_first + i];
@@ -77,12 +77,12 @@ __device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, cons
 }
 
 __device__ bool inline rayAABBIntersect(const Ray& r, const AABB& box, float& tOut) {
-    const Vec3 tmin = {
+    const float3 tmin = {
         (box.aabb_min.x - r.origin.x) / r.dir.x,
         (box.aabb_min.y - r.origin.y) / r.dir.y,
         (box.aabb_min.z - r.origin.z) / r.dir.z,
     };
-    const Vec3 tmax = {
+    const float3 tmax = {
         (box.aabb_max.x - r.origin.x) / r.dir.x,
         (box.aabb_max.y - r.origin.y) / r.dir.y,
         (box.aabb_max.z - r.origin.z) / r.dir.z,
@@ -110,7 +110,7 @@ __device__ bool inline rayAABBIntersect(const Ray& r, const AABB& box, float& tO
 __device__ inline bool hitSphereT(const Sphere& s, const Ray& r,
                            float tmin, float tmax, float& tOut)
 {
-    Vec3 oc = r.origin - s.center;
+    float3 oc = r.origin - s.center;
     float a = dot(r.dir, r.dir);
     float b = 2.0f * dot(oc, r.dir);
     float c = dot(oc, oc) - s.radius * s.radius;
@@ -126,7 +126,7 @@ __device__ inline bool hitSphereT(const Sphere& s, const Ray& r,
 }
 
 
-__device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float &tOut, Vec3& nOut) {
+__device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float &tOut, float3& nOut) {
     StackNode stack[MAX_PTR_COUNT];
     StackNode* stackPtr = stack;
 
@@ -138,13 +138,13 @@ __device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float
 
     bool hit = false;
     float closestT = 1e20;
-    Vec3 closestN;
+    float3 closestN;
     const BVHNode* node = root;
 
     while (node != NULL) {
         if(node->is_leaf()) {
             float hitT;
-            Vec3 hitN;
+            float3 hitN;
             if(rayLeafIntersect(r, bvh, node, closestT, hitT, hitN)) {
                 if(hitT < closestT) {
                     closestT = hitT;

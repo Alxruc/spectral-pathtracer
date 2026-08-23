@@ -3,56 +3,30 @@
 
 #include <hip/hip_runtime.h>
 #include <materials.hpp>
-#include <algorithm>
 
-// a smart person would have used float3 from the start
-// TODO a smart person will switch to float3, as a ??? person started using float4 because they
-// were to lazy to write Vec4
-struct Vec3 {
-    float x,y,z;
-    __host__ __device__ constexpr Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
-    __host__ __device__ constexpr Vec3() : x(0), y(0), z(0) {}
-    __host__ __device__ Vec3(const Vec3& other) : x(other.x), y(other.y), z(other.z) {}
-    __host__ __device__ Vec3& operator=(const Vec3& other) {
-        if (this != &other) {
-            x = other.x;
-            y = other.y;
-            z = other.z;
-        }
-        return *this;
-    }
-    __host__ __device__ float  operator[](int i) const {
-        return i == 0 ? x : (i == 1 ? y : z);
-    }
-};
-__host__ __device__ inline Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; };
-__host__ __device__ inline Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; };
-__host__ __device__ inline Vec3 operator-(Vec3 a) { return {-a.x,-a.y,-a.z};};
-__host__ __device__ inline Vec3 operator*(float s, Vec3 a) { return {s * a.x, s * a.y, s * a.z}; };
-__host__ __device__ inline Vec3 operator/(Vec3 a, float s) { return {a.x / s, a.y / s, a.z / s}; };
-__host__ __device__ inline float dot(Vec3 a, Vec3 b)      { return a.x * b.x + a.y * b.y + a.z * b.z; };
-__host__ __device__ inline Vec3 normalize(Vec3 a)         { return (1.0f / sqrtf(dot(a, a))) * a; };
-__host__ __device__ inline Vec3 cross(Vec3 a, Vec3 b)   { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; };
+__host__ __device__ inline float dot(float3 a, float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+__host__ __device__ inline float3 normalize(float3 a) { return a / sqrtf(dot(a, a)); }
+__host__ __device__ inline float3 cross(float3 a, float3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 
-inline Vec3 min(const Vec3& a, const Vec3& b) {
-    return Vec3{ std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z) };
+inline float3 min(const float3& a, const float3& b) {
+    return float3{ fminf(a.x, b.x), fminf(a.y, b.y), fminf(a.z, b.z) };
 }
 
-inline Vec3 max(const Vec3& a, const Vec3& b) {
-    return Vec3{ std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z) };
+inline float3 max(const float3& a, const float3& b) {
+    return float3{ fmaxf(a.x, b.x), fmaxf(a.y, b.y), fmaxf(a.z, b.z) };
 }
 
 struct Ray {
-    Vec3 origin, dir;
+    float3 origin, dir;
     bool prev_was_diffuse = false; // when our ray first leaves the camera (eye) no NEE competes for contribution yet
 };
-struct Hit    { float t; Vec3 p; Vec3 n; bool front_face; const Material* mat; };
+struct Hit    { float t; float3 p; float3 n; bool front_face; const Material* mat; };
 
-struct Sphere { Vec3 center; float radius; Material mat; };
+struct Sphere { float3 center; float radius; Material mat; };
 
 struct Triangle {
-    Vec3 a, b, c;
-    Vec3 normal;
+    float3 a, b, c;
+    float3 normal;
 };
 
 

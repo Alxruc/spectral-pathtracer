@@ -15,7 +15,7 @@ const float NORMALIZATION_CONSTANT = 0.011;
 
 // sun
 // (5, 5, 2) normalized
-__device__ const Vec3 SUN_DIR = {0.680414f, 0.680414f, 0.272166f};
+__device__ const float3 SUN_DIR = {0.680414f, 0.680414f, 0.272166f};
 __device__ const float SUN_TEMPERATURE = 5778; // K
 
 // for our sun to be brighter than the sky
