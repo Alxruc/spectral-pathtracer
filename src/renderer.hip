@@ -240,10 +240,6 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
             }
             else {
                 d = refract(unit, h.n, eta);
-                throughput.x *= 4.0f;
-                throughput.y = 0.0f;
-                throughput.z = 0.0f;
-                throughput.w = 0.0f;
             }
             throughput *= h.mat->dielectric.albedo;
             ray.prev_was_diffuse = false;
@@ -330,7 +326,19 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
        make_lambertian(0.8)
     };
 
-    Sphere scn[1] = {floor};
+    Sphere glass = {
+        {1.5, 0.5, 0},
+        0.5,
+        make_dielectric()
+    };
+
+    Sphere metal = {
+        {-1.5, 0.5, 0},
+        0.5,
+        make_metal(MetalType::Chrome, 0.0)
+    };
+
+    Sphere scn[3] = {floor, glass, metal};
 
     const float3 targetPos = {0.0f, 0.0f, 0.0f};
     const float3 cameraPos = {0.0f, 0.0f, -2.0f};

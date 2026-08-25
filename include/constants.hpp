@@ -21,7 +21,7 @@ __device__ const float SUN_TEMPERATURE = 5778; // K
 // for our sun to be brighter than the sky
 // number pulled out from thin air for now just based on vibes
 // to make it look semi right
-__device__ const float SUN_SCALE = 1e6;
+__device__ const float SUN_SCALE = 2e6;
 
 // blackbody(550nm, 5778) precomputed
 __device__ const float SUN_NORMALIZING = 2.586 * 10e13;
