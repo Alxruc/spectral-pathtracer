@@ -33,6 +33,13 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 endif()
 
+foreach(_lang CXX HIP)
+  set(CMAKE_${_lang}_FLAGS_RELEASE        "-O3 -DNDEBUG")
+  set(CMAKE_${_lang}_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
+  set(CMAKE_${_lang}_FLAGS_MINSIZEREL     "-Os -DNDEBUG")
+  set(CMAKE_${_lang}_FLAGS_DEBUG          "-O0 -g")
+endforeach()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 

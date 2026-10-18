@@ -3,7 +3,7 @@
 
 // gpu
 const int BLOCK_SIZE = 32;
-const int SPP = 2048;
+const int SPP = 1024;
 const short MAX_PTR_COUNT = 64;
 
 // rendering
@@ -12,6 +12,13 @@ const float MAX_WAVELENGTH_NM = 830;
 constexpr float UNIFORM_DENSITY = 0.00212765957;
 const float NORMALIZATION_WAVELENGTH_NM = 550;
 const float NORMALIZATION_CONSTANT = 0.011;
+
+// MNEE: most glass crossings a seed path may have (one sphere = enter + leave)
+const int MAX_SPECULAR_BOUNCES = 2;
+// 2 error numbers per glass vertex (sideways lean along s and t) = size of the Newton system
+const int MNEE_DIM = 2 * MAX_SPECULAR_BOUNCES;
+const int MNEE_MAX_ITERATIONS = 15; // paper Table 1
+const float MNEE_TOLERANCE = 1e-4f; // all errors below this = Snell holds
 
 // sun
 // (5, 5, 2) normalized

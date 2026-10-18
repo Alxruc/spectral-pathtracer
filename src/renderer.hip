@@ -51,9 +51,8 @@ __device__ float3 sampleSunDisk(RNG& rng)
 
     // Build an orthonormal basis around SUN_DIR
     // SUN_DIR is assumed to be normalized here
-    float3 a = fabsf(SUN_DIR.x) > 0.9f ? float3(0, 1, 0) : float3(1, 0, 0);
-    float3 u = normalize(cross(a, SUN_DIR));
-    float3 v = cross(SUN_DIR, u);
+    float3 u, v;
+    tangentFrame(SUN_DIR, u, v);
 
     return normalize(x * u + y * v + z * SUN_DIR);
 }
@@ -74,6 +73,7 @@ __device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const R
             h.front_face = dot(r.dir, outward) < 0.0f;
             h.n   = h.front_face ? outward : -outward;
             h.mat = &scn[i].mat;
+            h.obj_idx = i;
         }
     }
 
@@ -86,6 +86,7 @@ __device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const R
         h.n = h.front_face ? tri_n : -tri_n;
         h.p = r.origin + t * r.dir + 1e-4f * h.n; //small offset for shadow acne
         h.mat = &bvh.mat;
+        h.obj_idx = -1;
     }
 
     return found;
@@ -196,6 +197,124 @@ __device__ float light_pdf(float3 omega) {
     return 0.0;
 }
 
+// one place where the straight shadow ray crosses a glass surface
+struct SpecularVertex { float3 p; int obj_idx; bool entering; };
+
+enum class SeedOutcome { Escaped, Blocked };
+
+// seed path Y from the MNEE paper (Sec. 3.1): the glass crossings between x_b and the light
+struct SeedPath {
+    SpecularVertex v[MAX_SPECULAR_BOUNCES];
+    int count = 0;
+    SeedOutcome outcome = SeedOutcome::Blocked;
+};
+
+// Walks the shadow ray straight toward the light, passing through glass without bending
+// the seed only tells the manifold walk which surfaces to solve on
+__device__ SeedPath traceSeedPath(Ray shadow_ray, const Sphere* scn, int n, const DeviceBVH& bvh)
+{
+    SeedPath seed;
+    for (int i = 0; i < MAX_SPECULAR_BOUNCES; i++) {
+        Hit shadow_hit;
+        if (!hitScene(scn, n, bvh, shadow_ray, shadow_hit)) {
+            seed.outcome = SeedOutcome::Escaped;
+            return seed;
+        }
+
+        //  Hit: opaque = give up; Glass = save it and keep walking
+        if(shadow_hit.mat->type != MatType::Dielectric) {
+            seed.outcome = SeedOutcome::Blocked;
+            return seed;
+        }
+        else {
+            SpecularVertex glassVertex = {shadow_hit.p, shadow_hit.obj_idx, shadow_hit.front_face };
+            seed.v[seed.count] = glassVertex;
+            seed.count++;
+            shadow_ray.origin = shadow_hit.p;
+        }
+    }
+
+    // cap reached: anything still along the ray (more glass or something opaque) means we give up
+    Hit shadow_hit;
+    seed.outcome = hitScene(scn, n, bvh, shadow_ray, shadow_hit) ? SeedOutcome::Blocked : SeedOutcome::Escaped;
+    return seed;
+}
+
+// Snell's law error at one glass vertex: how much the generalized half vector leans sideways
+// wi and wo point away from the vertex, eta_i/eta_o are of the medium they travel through
+__device__ float2 vertexError(float3 normal, float3 wi, float eta_i, float3 wo, float eta_o) {
+    float3 half = normalize(eta_i * wi + eta_o * wo);
+    float3 s, t;
+    tangentFrame(normal, s, t);
+    return make_float2(dot(half, s), dot(half, t));
+}
+
+// Fills errors[2i] and errors[2i + 1] for every glass vertex i of path
+__device__ void getGlassErrors(const Sphere* scn, float ior, float3 x_b, float3 l,
+                               const SeedPath& path, float errors[MNEE_DIM]) {
+    for (int i = 0; i < path.count; i++) {
+        const SpecularVertex& v = path.v[i];
+
+        float3 prev = i == 0 ? x_b : path.v[i - 1].p;
+        float3 wi = normalize(prev - v.p);
+        // the last vertex has no next point, its outgoing arrow is the sun direction itself
+        float3 wo = i == path.count - 1 ? l : normalize(path.v[i + 1].p - v.p);
+
+        // entering: wi travels through air and wo through glass, leaving: the other way round
+        float eta_i = v.entering ? 1.0f : ior;
+        float eta_o = v.entering ? ior : 1.0f;
+
+        float3 sphere_normal = sphereNormal(scn[v.obj_idx], v.p);
+        float2 e = vertexError(sphere_normal, wi, eta_i, wo, eta_o);
+        errors[2 * i]     = e.x;
+        errors[2 * i + 1] = e.y;
+    }
+}
+
+// J[row][col] = how much errors[row] changes per nudge along col
+// Column 2i nudges vertex i along its s, column 2i + 1 along its t 
+// what tangentFrame gives at  the vertex's current position, so the Newton step later moves points in the same directions.
+__device__ void glassErrorJacobian(const Sphere* scn, float ior, float3 x_b, float3 l,
+                                   const SeedPath& path, float J[MNEE_DIM][MNEE_DIM], float base_errors[MNEE_DIM]) {
+
+    // nudge the path point, project it back onto its sphere and check the change in errors
+    for (int col = 0; col < 2 * path.count; col++) {
+        int idx = col / 2;
+        SeedPath nudged = path; 
+        float3 x = nudged.v[idx].p;
+
+        Sphere sphere = scn[path.v[idx].obj_idx];
+        float3 sphere_normal = sphereNormal(sphere, x);
+        float3 s,t;
+        tangentFrame(sphere_normal, s, t);
+
+        float delta = 1e-3f * sphere.radius;
+        if(col % 2 == 0) x = x + delta * s;
+        else             x = x + delta * t;
+
+        x = projectOntoSphere(sphere, x);
+        nudged.v[idx].p = x;
+        float nudged_errors[MNEE_DIM];
+
+        getGlassErrors(scn, ior, x_b, l, nudged, nudged_errors);
+
+        for(int row = 0; row < 2 * path.count; row++) {
+            J[row][col] = (nudged_errors[row] - base_errors[row]) / delta;
+        }
+    }
+
+}
+
+
+// does a light reach from to to with nothing in between
+__device__ bool segmentReaches(const Sphere* scn, int n, const DeviceBVH& bvh, float3 from, float3 to, int obj_idx)
+{
+    Ray r = {from, normalize(to - from), false};
+    Hit hit;
+    if (!hitScene(scn, n, bvh, r, hit) || hit.obj_idx != obj_idx) return false;
+    float3 diff = hit.p - to;
+    return dot(diff, diff) < 1e-6f;
+}
 
 __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const DeviceBVH& bvh)
 {
@@ -220,7 +339,6 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
         float3 d;
         // we hit glass
         if (h.mat->type == MatType::Dielectric) {
-            // TODO fix for hero wavelengths
             // when dispersing we let go of the hero wavelength idea
             // since all different wavelengths take different paths here
             // we just focus on the hero
@@ -246,7 +364,6 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
         }
         // we hit metal
         else if (h.mat->type == MatType::Metal) {
-            // TODO Fix for hero wavelengths
             float n = getRefractiveIndex(h.mat->metal.metal, lamdas.x);
             float k = getExtinctionIndex(h.mat->metal.metal, lamdas.x);
             float r_0 = (powf(n-1, 2) + powf(k, 2)) / (powf(n+1, 2) + powf(k,2));
@@ -263,18 +380,131 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
         else {
             float3 l = sampleSunDisk(rng);
             Ray shadow_ray = {h.p + EPSILON * h.n, l, false};
-            Hit throwaway;
             float n_dot_l = dot(l, h.n);
-            if(dot(l, h.n) > 0 && !hitScene(scn, n, bvh, shadow_ray, throwaway)) {
+            SeedPath seed = traceSeedPath(shadow_ray, scn, n, bvh);
+            bool escaped = seed.outcome == SeedOutcome::Escaped;
+
+            // nothing in the way: regular NEE
+            if (escaped && seed.count == 0 && n_dot_l > 0) {
                 float4 sun_rad = sunRadiance(lamdas);
                 float mis_weight = 1.0f / (ONE_OVER_OMEGA_SUN + prev_brdf_density);
 
                 radiance += throughput 
                           * (h.mat->lambertian.albedo / PI) 
                           * sun_rad 
-                          * n_dot_l 
+                          * n_dot_l
                           * mis_weight;
             }
+            // only glass, we do MNEE seed.v[0 .. seed.count) is the straight line seed
+            else if (escaped && seed.count > 1) {
+                float ior = cauchy(lamdas.x);
+                SeedPath path = seed; // the walk along points, seed is starting guess
+                bool converged = false;
+                float errors[MNEE_DIM] = {};
+
+                // Newton loop
+                for(int i = 0; i < MNEE_MAX_ITERATIONS; i++) {
+                    getGlassErrors(scn, ior, h.p, l, path, errors);
+                    bool done = true;
+                    for(int j = 0; j < 2 * path.count; j++) {
+                        if(fabsf(errors[j]) > MNEE_TOLERANCE) {
+                            done = false;
+                            break;
+                        }
+                    }
+                    if(done) {
+                        converged = true;
+                        break;
+                    }
+                
+                    float J[MNEE_DIM][MNEE_DIM] = {};
+                    glassErrorJacobian(scn, ior, h.p, l, path, J, errors);
+                    float step[MNEE_DIM] = {};
+
+                    float flipped[MNEE_DIM] = {};
+                    for (int e = 0; e < MNEE_DIM; e++) {
+                        flipped[e] = -errors[e];
+                    }
+                    if(!solve4(J, flipped, 2 * path.count, step)) break;
+
+                    for(int p = 0; p < path.count; p++) {
+                        Sphere sphere = scn[path.v[p].obj_idx];
+                        float3 sphere_normal = (path.v[p].p - sphere.center) / sphere.radius;
+                        float3 s,t;
+                        tangentFrame(sphere_normal, s, t);
+                        float3 adjusted = path.v[p].p + step[2*p] * s + step[2*p + 1] * t;
+                        path.v[p].p = projectOntoSphere(sphere, adjusted);
+                    }
+
+                }
+
+                if(converged) {
+                    const float3 x1 = path.v[0].p, x2 = path.v[1].p;
+                    const float3 n1 = sphereNormal(scn[path.v[0].obj_idx], x1);
+                    const float3 n2 = sphereNormal(scn[path.v[1].obj_idx], x2);
+
+                    // light really arrives along x_b to x1, not along l
+                    float3 to_x1 = normalize(x1 - h.p);
+                    float cos_b = dot(to_x1, h.n);
+
+                    // the bent path must exist in the scene so ground hit to x1, x1 to x2, and x2 to the light
+                    Hit escape_hit;
+                    bool valid = cos_b > 0
+                        && segmentReaches(scn, n, bvh, h.p + EPSILON * h.n, x1, path.v[0].obj_idx)
+                        && segmentReaches(scn, n, bvh, x1, x2, path.v[1].obj_idx)
+                        && !hitScene(scn, n, bvh, Ray{x2, l, false}, escape_hit);
+
+                    if (valid) {
+                        // Fresnel transmission at each glass point
+                        // schlick's r0 is the same for ior and 1/ior, so the ratio direction doesn't matter.
+                        float T1 = 1.0f - schlick(fabsf(dot(-1.0f * to_x1, n1)), ior);
+                        float T2 = 1.0f - schlick(fabsf(dot(l, n2)), ior);
+
+                        float delta = 1e-3f;
+                        float3 u,v;
+                        tangentFrame(l,u,v);
+                        float3 l_u = normalize(l + delta * u);
+                        float3 l_v = normalize(l + delta * v);
+                        // same points, tilted sun: only the last vertex's two errors become non-zero
+                        float errors_l_u[MNEE_DIM], errors_l_v[MNEE_DIM] = {};
+                        getGlassErrors(scn, ior, h.p, l_u, path, errors_l_u);
+                        getGlassErrors(scn, ior, h.p, l_v, path, errors_l_v);
+
+                        float J[MNEE_DIM][MNEE_DIM] = {};
+                        glassErrorJacobian(scn, ior, h.p, l, path, J, errors);
+
+                        float rhs[MNEE_DIM] = {};
+                        for(int i = 0; i < MNEE_DIM; i++)
+                            rhs[i] = -(errors_l_u[i] - errors[i]) / delta;
+
+                        float dX_u[MNEE_DIM];
+                        solve4(J, rhs, 2*path.count, dX_u);
+
+                        for(int i = 0; i < MNEE_DIM; i++)
+                            rhs[i] = -(errors_l_v[i] - errors[i]) / delta;
+
+                        float dX_v[MNEE_DIM];
+                        solve4(J, rhs, 2*path.count, dX_v);
+
+                        float M[2][2] = {{dX_u[0], dX_v[0]}, {dX_u[1], dX_v[1]}};
+
+                        float G = fabsf(M[0][0] * M[1][1] - M[0][1]*M[1][0]) * 
+                                    fabsf(dot(n1, -to_x1)) 
+                                    / dot(x1 - h.p, x1 - h.p);
+
+                        // the walk used the hero wavelength's IOR, so only that lane can use this path.
+                        // (no x4 for the missing lanes: fwrap() in sampleHeroWavelength currently puts the
+                        // support lanes outside the visible range, so lane x is the whole signal anyway)
+                        float sun_rad = sunRadiance(lamdas.x);
+                        radiance.x += throughput.x
+                                    * (h.mat->lambertian.albedo / PI)
+                                    * sun_rad
+                                    * cos_b * T1 * T2 * G
+                                    / ONE_OVER_OMEGA_SUN;
+                    }
+                }
+            }
+            // otherwise x_b is in shadow
 
             d = sampleSphere(rng);
             if (dot(d, h.n) < 0.0f) d = -1.0f * d;
@@ -327,7 +557,7 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
     };
 
     Sphere glass = {
-        {1.5, 0.5, 0},
+        {1.5, 0.04, 0},
         0.5,
         make_dielectric()
     };
