@@ -52,10 +52,11 @@ __device__ inline bool rayTriangleIntersect(const Triangle& tri, const Ray& r, f
 }
 
 // we assume only leafs get sent here
-__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float globalClosestT, float& tOut, float3& nOut) {
+__device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, const BVHNode* node, float globalClosestT, float& tOut, float3& nOut, uint32_t& idxOut) {
     float closestT = globalClosestT;
     float hit = false;
     float3 closestN;
+    uint32_t closest_triangle_idx;
     for(uint32_t i = 0; i < node->tri_count; i++) {
         float hitT;
         uint32_t global_tri_idx = bvh.tri_idx[node->left_first + i];
@@ -64,6 +65,7 @@ __device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, cons
             if(hitT < closestT) {
                 closestT = hitT;
                 closestN = tri.normal;
+                closest_triangle_idx = global_tri_idx;
             }
             hit = true;
         }
@@ -72,6 +74,7 @@ __device__ bool inline rayLeafIntersect(const Ray& r, const DeviceBVH& bvh, cons
     if(hit) {
         tOut = closestT;
         nOut = closestN;
+        idxOut = closest_triangle_idx;
     }
     return hit;
 }
@@ -126,7 +129,7 @@ __device__ inline bool hitSphereT(const Sphere& s, const Ray& r,
 }
 
 
-__device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float &tOut, float3& nOut) {
+__device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float &tOut, float3& nOut, uint32_t& idxOut) {
     StackNode stack[MAX_PTR_COUNT];
     StackNode* stackPtr = stack;
 
@@ -139,16 +142,19 @@ __device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float
     bool hit = false;
     float closestT = 1e20;
     float3 closestN;
+    uint32_t closest_triangle_idx;
     const BVHNode* node = root;
 
     while (node != NULL) {
         if(node->is_leaf()) {
             float hitT;
             float3 hitN;
-            if(rayLeafIntersect(r, bvh, node, closestT, hitT, hitN)) {
+            uint32_t hitIdx;
+            if(rayLeafIntersect(r, bvh, node, closestT, hitT, hitN, hitIdx)) {
                 if(hitT < closestT) {
                     closestT = hitT;
                     closestN = hitN;
+                    closest_triangle_idx = hitIdx;
                     hit = true;
                 }
             }
@@ -194,6 +200,7 @@ __device__ inline bool rayBVHIntersect(const Ray &r, const DeviceBVH &bvh, float
     if(hit) {
         tOut = closestT;
         nOut = closestN;
+        idxOut = closest_triangle_idx;
     }
     return hit;
 }

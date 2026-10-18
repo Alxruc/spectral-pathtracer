@@ -66,6 +66,10 @@ struct DeviceBVH {
     Triangle* tris;
     Material mat = make_lambertian(0.7);
 
+    // for mapping the triangles to the objects they belong to
+    const uint32_t* object_boundaries = nullptr;
+    uint32_t num_objects = 0;
+
     __device__ const BVHNode* getRoot() const {
         return &nodes[0];
     }
@@ -81,6 +85,26 @@ struct DeviceBVH {
     __device__ const AABB& getAABB(const BVHNode* node) const {
         return node->bounds;
     }
+
+    __device__ uint32_t getObjectIdx(uint32_t triangle_index) const {
+        if (num_objects <= 1) return 0;
+
+        // Binary search to find which range triangle_index belongs to
+        int low = 0;
+        int high = num_objects - 2; // Last valid start index
+        uint32_t obj_id = 0;
+
+        while (low <= high) {
+            int mid = low + (high - low) / 2;
+            if (object_boundaries[mid + 1] > triangle_index) {
+                obj_id = mid;
+                high = mid - 1; // Check lower ranges
+            } else {
+                low = mid + 1;  // Check upper ranges
+            }
+        }
+        return obj_id;
+    }
 };
 
 // for automatically freeing the memory again because I'll probably forget it
@@ -90,8 +114,11 @@ public:
     uint32_t node_count = 0;
     uint32_t tri_count = 0;
 
+    // Device allocation for the boundaries
+    uint32_t* d_object_boundaries = nullptr;
+
     // uploads data from CPU BVH to GPU VRAM
-    void upload(const BVH& cpu_bvh) {
+    void upload(const BVH& cpu_bvh, const std::vector<uint32_t>& host_boundaries) {
         // free any existing allocations just in case
         free();
 
@@ -109,6 +136,15 @@ public:
         size_t tris_bytes = tri_count * sizeof(Triangle);
         HIP_CHECK(hipMalloc(&bvh.tris, tris_bytes));
         HIP_CHECK(hipMemcpy(bvh.tris, cpu_bvh.tris.data(), tris_bytes, hipMemcpyHostToDevice));
+
+        bvh.num_objects = static_cast<uint32_t>(host_boundaries.size());
+        if(bvh.num_objects > 0) {
+            HIP_CHECK(hipMalloc(&d_object_boundaries, bvh.num_objects * sizeof(uint32_t)));
+            HIP_CHECK(hipMemcpy(d_object_boundaries, host_boundaries.data(), 
+                       bvh.num_objects * sizeof(uint32_t), hipMemcpyHostToDevice));
+            
+            bvh.object_boundaries = d_object_boundaries;
+        }
     }
 
     // clean up GPU memory
@@ -116,6 +152,7 @@ public:
         if (bvh.nodes)   { HIP_CHECK(hipFree(bvh.nodes));   bvh.nodes = nullptr; }
         if (bvh.tri_idx) { HIP_CHECK(hipFree(bvh.tri_idx)); bvh.tri_idx = nullptr; }
         if (bvh.tris)    { HIP_CHECK(hipFree(bvh.tris));    bvh.tris = nullptr; }
+        if (d_object_boundaries) {  HIP_CHECK(hipFree(d_object_boundaries)) ; }
     }
 
     ~GPUBVHManager() {

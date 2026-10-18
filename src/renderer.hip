@@ -63,30 +63,17 @@ __device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const R
     float closest = 1e30f;
     bool found = false;
 
-    for (int i = 0; i < n; ++i) {
-        float t;
-        if (hitSphereT(scn[i], r, TMIN, closest, t)) {
-            closest = t; found = true;
-            h.t = t;
-            h.p = r.origin + t * r.dir;
-            float3 outward = (1.0f / scn[i].radius) * (h.p - scn[i].center);
-            h.front_face = dot(r.dir, outward) < 0.0f;
-            h.n   = h.front_face ? outward : -outward;
-            h.mat = &scn[i].mat;
-            h.obj_idx = i;
-        }
-    }
-
     float t;
     float3 tri_n;
-    if (rayBVHIntersect(r, bvh, t, tri_n) && t < closest) {
+    uint32_t global_triangle_idx;
+    if (rayBVHIntersect(r, bvh, t, tri_n, global_triangle_idx) && t < closest) {
         found = true;
         h.t = t;
         h.front_face = dot(r.dir, tri_n) < 0.0f;
         h.n = h.front_face ? tri_n : -tri_n;
         h.p = r.origin + t * r.dir + 1e-4f * h.n; //small offset for shadow acne
         h.mat = &bvh.mat;
-        h.obj_idx = -1;
+        h.obj_idx = bvh.getObjectIdx(global_triangle_idx);
     }
 
     return found;
@@ -598,10 +585,12 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
 
 void build_bvh(Renderer* r) {
     std::vector<Triangle> mesh = loadObj("data/spot.obj");
+    std::vector<uint32_t> indexBoundaries = {0};
+    indexBoundaries.push_back(mesh.size());
     BVH bvh;
     bvh.tris = mesh;
     bvh.build();
-    r->scene.manager.upload(bvh);
+    r->scene.manager.upload(bvh, indexBoundaries);
 }
 
 Renderer* renderer_create(int w, int h) {
