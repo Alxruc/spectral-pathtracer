@@ -71,12 +71,21 @@ __device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const R
         h.t = t;
         h.front_face = dot(r.dir, tri_n) < 0.0f;
         h.n = h.front_face ? tri_n : -tri_n;
-        h.p = r.origin + t * r.dir + 1e-4f * h.n; //small offset for shadow acne
-        h.mat = &bvh.mat;
+        h.p = r.origin + t * r.dir; // exact surface point, offsetRayOrigin handles acne when spawning
         h.obj_idx = bvh.getObjectIdx(global_triangle_idx);
+        h.mat = h.obj_idx % 2 == 0 ? &bvh.glass : &bvh.lambertian;
+        h.tri = bvh.tris[global_triangle_idx];
     }
 
     return found;
+}
+
+// nudges a ray start off the surface toward the side dir is heading, so the surface
+// it just left lies behind the ray and can't be hit again (works for either sign of n)
+__device__ float3 offsetRayOrigin(float3 p, float3 n, float3 dir)
+{
+    const float RAY_OFFSET = 1e-4f;
+    return dot(dir, n) > 0.0f ? p + RAY_OFFSET * n : p - RAY_OFFSET * n;
 }
 
 __device__ float blackbody(float lamda, float temperature) {
@@ -185,7 +194,7 @@ __device__ float light_pdf(float3 omega) {
 }
 
 // one place where the straight shadow ray crosses a glass surface
-struct SpecularVertex { float3 p; int obj_idx; bool entering; };
+struct SpecularVertex { float3 p; int obj_idx; bool entering; Triangle tri; };
 
 enum class SeedOutcome { Escaped, Blocked };
 
@@ -214,10 +223,10 @@ __device__ SeedPath traceSeedPath(Ray shadow_ray, const Sphere* scn, int n, cons
             return seed;
         }
         else {
-            SpecularVertex glassVertex = {shadow_hit.p, shadow_hit.obj_idx, shadow_hit.front_face };
+            SpecularVertex glassVertex = {shadow_hit.p, shadow_hit.obj_idx, shadow_hit.front_face, shadow_hit.tri };
             seed.v[seed.count] = glassVertex;
             seed.count++;
-            shadow_ray.origin = shadow_hit.p;
+            shadow_ray.origin = offsetRayOrigin(shadow_hit.p, shadow_hit.n, shadow_ray.dir);
         }
     }
 
@@ -251,8 +260,8 @@ __device__ void getGlassErrors(const Sphere* scn, float ior, float3 x_b, float3 
         float eta_i = v.entering ? 1.0f : ior;
         float eta_o = v.entering ? ior : 1.0f;
 
-        float3 sphere_normal = sphereNormal(scn[v.obj_idx], v.p);
-        float2 e = vertexError(sphere_normal, wi, eta_i, wo, eta_o);
+        Triangle triangle = v.tri;
+        float2 e = vertexError(triangle.normal, wi, eta_i, wo, eta_o);
         errors[2 * i]     = e.x;
         errors[2 * i + 1] = e.y;
     }
@@ -270,16 +279,17 @@ __device__ void glassErrorJacobian(const Sphere* scn, float ior, float3 x_b, flo
         SeedPath nudged = path; 
         float3 x = nudged.v[idx].p;
 
-        Sphere sphere = scn[path.v[idx].obj_idx];
-        float3 sphere_normal = sphereNormal(sphere, x);
+        Triangle triangle = path.v[idx].tri;
         float3 s,t;
-        tangentFrame(sphere_normal, s, t);
+        tangentFrame(triangle.normal, s, t);
 
-        float delta = 1e-3f * sphere.radius;
+        float delta = 1e-3f; // just the same constant for everything for now for simplicity
         if(col % 2 == 0) x = x + delta * s;
         else             x = x + delta * t;
 
-        x = projectOntoSphere(sphere, x);
+        // i dont really care that we could land outside the mesh here
+        // trying stuff out
+        x = projectOntoPlane(triangle.normal, triangle.a, x); 
         nudged.v[idx].p = x;
         float nudged_errors[MNEE_DIM];
 
@@ -366,7 +376,7 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
         // we hit other materials
         else {
             float3 l = sampleSunDisk(rng);
-            Ray shadow_ray = {h.p + EPSILON * h.n, l, false};
+            Ray shadow_ray = {offsetRayOrigin(h.p, h.n, l), l, false};
             float n_dot_l = dot(l, h.n);
             SeedPath seed = traceSeedPath(shadow_ray, scn, n, bvh);
             bool escaped = seed.outcome == SeedOutcome::Escaped;
@@ -415,20 +425,19 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
                     if(!solve4(J, flipped, 2 * path.count, step)) break;
 
                     for(int p = 0; p < path.count; p++) {
-                        Sphere sphere = scn[path.v[p].obj_idx];
-                        float3 sphere_normal = (path.v[p].p - sphere.center) / sphere.radius;
+                        Triangle triangle = path.v[p].tri;
                         float3 s,t;
-                        tangentFrame(sphere_normal, s, t);
+                        tangentFrame(triangle.normal, s, t);
                         float3 adjusted = path.v[p].p + step[2*p] * s + step[2*p + 1] * t;
-                        path.v[p].p = projectOntoSphere(sphere, adjusted);
+                        path.v[p].p = projectOntoPlane(triangle.normal, triangle.a, adjusted);
                     }
 
                 }
 
                 if(converged) {
                     const float3 x1 = path.v[0].p, x2 = path.v[1].p;
-                    const float3 n1 = sphereNormal(scn[path.v[0].obj_idx], x1);
-                    const float3 n2 = sphereNormal(scn[path.v[1].obj_idx], x2);
+                    const float3 n1 = path.v[0].tri.normal;
+                    const float3 n2 = path.v[1].tri.normal;
 
                     // light really arrives along x_b to x1, not along l
                     float3 to_x1 = normalize(x1 - h.p);
@@ -437,9 +446,9 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
                     // the bent path must exist in the scene so ground hit to x1, x1 to x2, and x2 to the light
                     Hit escape_hit;
                     bool valid = cos_b > 0
-                        && segmentReaches(scn, n, bvh, h.p + EPSILON * h.n, x1, path.v[0].obj_idx)
-                        && segmentReaches(scn, n, bvh, x1, x2, path.v[1].obj_idx)
-                        && !hitScene(scn, n, bvh, Ray{x2, l, false}, escape_hit);
+                        && segmentReaches(scn, n, bvh, offsetRayOrigin(h.p, h.n, to_x1), x1, path.v[0].obj_idx)
+                        && segmentReaches(scn, n, bvh, offsetRayOrigin(x1, n1, x2 - x1), x2, path.v[1].obj_idx)
+                        && !hitScene(scn, n, bvh, Ray{offsetRayOrigin(x2, n2, l), l, false}, escape_hit);
 
                     if (valid) {
                         // Fresnel transmission at each glass point
@@ -499,7 +508,7 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
             ray.prev_was_diffuse = true;
         }
 
-        ray.origin = h.p;
+        ray.origin = offsetRayOrigin(h.p, h.n, d);
         ray.dir    = d;
     }
     // convert accumulated 4-lane radiance to CIE XYZ at the end
@@ -587,8 +596,12 @@ void build_bvh(Renderer* r) {
     std::vector<Triangle> mesh = loadObj("data/spot.obj");
     std::vector<uint32_t> indexBoundaries = {0};
     indexBoundaries.push_back(mesh.size());
+    std::vector<Triangle> floor = loadObj("data/floor.obj");
+    std::vector<Triangle> combined = mesh;
+    combined.insert(combined.end(), floor.begin(), floor.end());
+    indexBoundaries.push_back(combined.size());
     BVH bvh;
-    bvh.tris = mesh;
+    bvh.tris = combined;
     bvh.build();
     r->scene.manager.upload(bvh, indexBoundaries);
 }

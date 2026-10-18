@@ -64,7 +64,8 @@ struct DeviceBVH {
     BVHNode* nodes;
     uint32_t* tri_idx;
     Triangle* tris;
-    Material mat = make_lambertian(0.7);
+    Material lambertian = make_lambertian(0.7);
+    Material glass = make_dielectric();
 
     // for mapping the triangles to the objects they belong to
     const uint32_t* object_boundaries = nullptr;
