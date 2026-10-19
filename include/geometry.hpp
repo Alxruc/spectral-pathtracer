@@ -25,13 +25,18 @@ inline float3 max(const float3& a, const float3& b) {
     return float3{ fmaxf(a.x, b.x), fmaxf(a.y, b.y), fmaxf(a.z, b.z) };
 }
 
+struct Triangle {
+    float3 a, b, c;
+    float3 normal;
+};
+
 struct Ray {
     float3 origin, dir;
     bool prev_was_diffuse = false; // when our ray first leaves the camera (eye) no NEE competes for contribution yet
 };
 
 // naive index were our BVH is just -1, breaks as soon as we have more stuff but fine for prototype
-struct Hit    { float t; float3 p; float3 n; bool front_face; const Material* mat; int obj_idx; };
+struct Hit    { float t; float3 p; float3 n; bool front_face; const Material* mat; int obj_idx; Triangle tri; };
 
 struct Sphere { float3 center; float radius; Material mat; };
 
@@ -40,6 +45,11 @@ __host__ __device__ inline float3 sphereNormal(const Sphere& s, float3 p) { retu
 // closest point on the sphere: the manifold walk's "push back onto the surface" step
 __host__ __device__ inline float3 projectOntoSphere(const Sphere& s, float3 p) { return s.center + s.radius * normalize(p - s.center); }
 
+// ASSUMES UNIT NORMAL! (which describes the plane)
+__host__ __device__ inline float3 projectOntoPlane(const float3 n, const float3 plane_point, const float3 point) {
+    float3 v = point - plane_point;
+    return point - dot(v,n) * n;
+}
 
 // gaussian solver for the manifold next event estimation
 __device__ bool solve4(const float A[MNEE_DIM][MNEE_DIM], const float b[MNEE_DIM], int m, float x[MNEE_DIM])
@@ -84,10 +94,7 @@ __device__ bool solve4(const float A[MNEE_DIM][MNEE_DIM], const float b[MNEE_DIM
     return true;
 }
 
-struct Triangle {
-    float3 a, b, c;
-    float3 normal;
-};
+
 
 
 #endif

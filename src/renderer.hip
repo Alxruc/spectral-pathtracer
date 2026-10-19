@@ -57,39 +57,33 @@ __device__ float3 sampleSunDisk(RNG& rng)
     return normalize(x * u + y * v + z * SUN_DIR);
 }
 
-__device__ bool hitScene(const Sphere* scn, int n, const DeviceBVH& bvh, const Ray& r, Hit& h)
+__device__ bool hitScene(const DeviceBVH& bvh, const Ray& r, Hit& h)
 {
-    const float TMIN = 1e-3f; // shadow-acne guard
-    float closest = 1e30f;
     bool found = false;
-
-    for (int i = 0; i < n; ++i) {
-        float t;
-        if (hitSphereT(scn[i], r, TMIN, closest, t)) {
-            closest = t; found = true;
-            h.t = t;
-            h.p = r.origin + t * r.dir;
-            float3 outward = (1.0f / scn[i].radius) * (h.p - scn[i].center);
-            h.front_face = dot(r.dir, outward) < 0.0f;
-            h.n   = h.front_face ? outward : -outward;
-            h.mat = &scn[i].mat;
-            h.obj_idx = i;
-        }
-    }
 
     float t;
     float3 tri_n;
-    if (rayBVHIntersect(r, bvh, t, tri_n) && t < closest) {
+    uint32_t global_triangle_idx;
+    if (rayBVHIntersect(r, bvh, t, tri_n, global_triangle_idx)) {
         found = true;
         h.t = t;
         h.front_face = dot(r.dir, tri_n) < 0.0f;
         h.n = h.front_face ? tri_n : -tri_n;
-        h.p = r.origin + t * r.dir + 1e-4f * h.n; //small offset for shadow acne
-        h.mat = &bvh.mat;
-        h.obj_idx = -1;
+        h.p = r.origin + t * r.dir; // exact surface point, offsetRayOrigin handles acne when spawning
+        h.obj_idx = bvh.getObjectIdx(global_triangle_idx);
+        h.mat = (h.obj_idx % 3 == 0) ? &bvh.metal : ((h.obj_idx % 3 == 1) ? &bvh.lambertian : &bvh.glass);
+        h.tri = bvh.tris[global_triangle_idx];
     }
 
     return found;
+}
+
+// nudges a ray start off the surface toward the side dir is heading, so the surface
+// it just left lies behind the ray and can't be hit again (works for either sign of n)
+__device__ float3 offsetRayOrigin(float3 p, float3 n, float3 dir)
+{
+    const float RAY_OFFSET = 1e-4f;
+    return dot(dir, n) > 0.0f ? p + RAY_OFFSET * n : p - RAY_OFFSET * n;
 }
 
 __device__ float blackbody(float lamda, float temperature) {
@@ -198,7 +192,7 @@ __device__ float light_pdf(float3 omega) {
 }
 
 // one place where the straight shadow ray crosses a glass surface
-struct SpecularVertex { float3 p; int obj_idx; bool entering; };
+struct SpecularVertex { float3 p; int obj_idx; bool entering; Triangle tri; };
 
 enum class SeedOutcome { Escaped, Blocked };
 
@@ -211,12 +205,12 @@ struct SeedPath {
 
 // Walks the shadow ray straight toward the light, passing through glass without bending
 // the seed only tells the manifold walk which surfaces to solve on
-__device__ SeedPath traceSeedPath(Ray shadow_ray, const Sphere* scn, int n, const DeviceBVH& bvh)
+__device__ SeedPath traceSeedPath(Ray shadow_ray, const DeviceBVH& bvh)
 {
     SeedPath seed;
     for (int i = 0; i < MAX_SPECULAR_BOUNCES; i++) {
         Hit shadow_hit;
-        if (!hitScene(scn, n, bvh, shadow_ray, shadow_hit)) {
+        if (!hitScene(bvh, shadow_ray, shadow_hit)) {
             seed.outcome = SeedOutcome::Escaped;
             return seed;
         }
@@ -227,16 +221,16 @@ __device__ SeedPath traceSeedPath(Ray shadow_ray, const Sphere* scn, int n, cons
             return seed;
         }
         else {
-            SpecularVertex glassVertex = {shadow_hit.p, shadow_hit.obj_idx, shadow_hit.front_face };
+            SpecularVertex glassVertex = {shadow_hit.p, shadow_hit.obj_idx, shadow_hit.front_face, shadow_hit.tri };
             seed.v[seed.count] = glassVertex;
             seed.count++;
-            shadow_ray.origin = shadow_hit.p;
+            shadow_ray.origin = offsetRayOrigin(shadow_hit.p, shadow_hit.n, shadow_ray.dir);
         }
     }
 
     // cap reached: anything still along the ray (more glass or something opaque) means we give up
     Hit shadow_hit;
-    seed.outcome = hitScene(scn, n, bvh, shadow_ray, shadow_hit) ? SeedOutcome::Blocked : SeedOutcome::Escaped;
+    seed.outcome = hitScene(bvh, shadow_ray, shadow_hit) ? SeedOutcome::Blocked : SeedOutcome::Escaped;
     return seed;
 }
 
@@ -250,7 +244,7 @@ __device__ float2 vertexError(float3 normal, float3 wi, float eta_i, float3 wo, 
 }
 
 // Fills errors[2i] and errors[2i + 1] for every glass vertex i of path
-__device__ void getGlassErrors(const Sphere* scn, float ior, float3 x_b, float3 l,
+__device__ void getGlassErrors(float ior, float3 x_b, float3 l,
                                const SeedPath& path, float errors[MNEE_DIM]) {
     for (int i = 0; i < path.count; i++) {
         const SpecularVertex& v = path.v[i];
@@ -264,8 +258,8 @@ __device__ void getGlassErrors(const Sphere* scn, float ior, float3 x_b, float3 
         float eta_i = v.entering ? 1.0f : ior;
         float eta_o = v.entering ? ior : 1.0f;
 
-        float3 sphere_normal = sphereNormal(scn[v.obj_idx], v.p);
-        float2 e = vertexError(sphere_normal, wi, eta_i, wo, eta_o);
+        Triangle triangle = v.tri;
+        float2 e = vertexError(triangle.normal, wi, eta_i, wo, eta_o);
         errors[2 * i]     = e.x;
         errors[2 * i + 1] = e.y;
     }
@@ -274,7 +268,7 @@ __device__ void getGlassErrors(const Sphere* scn, float ior, float3 x_b, float3 
 // J[row][col] = how much errors[row] changes per nudge along col
 // Column 2i nudges vertex i along its s, column 2i + 1 along its t 
 // what tangentFrame gives at  the vertex's current position, so the Newton step later moves points in the same directions.
-__device__ void glassErrorJacobian(const Sphere* scn, float ior, float3 x_b, float3 l,
+__device__ void glassErrorJacobian(float ior, float3 x_b, float3 l,
                                    const SeedPath& path, float J[MNEE_DIM][MNEE_DIM], float base_errors[MNEE_DIM]) {
 
     // nudge the path point, project it back onto its sphere and check the change in errors
@@ -283,20 +277,21 @@ __device__ void glassErrorJacobian(const Sphere* scn, float ior, float3 x_b, flo
         SeedPath nudged = path; 
         float3 x = nudged.v[idx].p;
 
-        Sphere sphere = scn[path.v[idx].obj_idx];
-        float3 sphere_normal = sphereNormal(sphere, x);
+        Triangle triangle = path.v[idx].tri;
         float3 s,t;
-        tangentFrame(sphere_normal, s, t);
+        tangentFrame(triangle.normal, s, t);
 
-        float delta = 1e-3f * sphere.radius;
+        float delta = 1e-3f; // just the same constant for everything for now for simplicity
         if(col % 2 == 0) x = x + delta * s;
         else             x = x + delta * t;
 
-        x = projectOntoSphere(sphere, x);
+        // i dont really care that we could land outside the mesh here
+        // trying stuff out
+        x = projectOntoPlane(triangle.normal, triangle.a, x); 
         nudged.v[idx].p = x;
         float nudged_errors[MNEE_DIM];
 
-        getGlassErrors(scn, ior, x_b, l, nudged, nudged_errors);
+        getGlassErrors(ior, x_b, l, nudged, nudged_errors);
 
         for(int row = 0; row < 2 * path.count; row++) {
             J[row][col] = (nudged_errors[row] - base_errors[row]) / delta;
@@ -307,16 +302,16 @@ __device__ void glassErrorJacobian(const Sphere* scn, float ior, float3 x_b, flo
 
 
 // does a light reach from to to with nothing in between
-__device__ bool segmentReaches(const Sphere* scn, int n, const DeviceBVH& bvh, float3 from, float3 to, int obj_idx)
+__device__ bool segmentReaches(const DeviceBVH& bvh, float3 from, float3 to, int obj_idx)
 {
     Ray r = {from, normalize(to - from), false};
     Hit hit;
-    if (!hitScene(scn, n, bvh, r, hit) || hit.obj_idx != obj_idx) return false;
+    if (!hitScene(bvh, r, hit) || hit.obj_idx != obj_idx) return false;
     float3 diff = hit.p - to;
     return dot(diff, diff) < 1e-6f;
 }
 
-__device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, const DeviceBVH& bvh)
+__device__ float3 traceRadiance(Ray ray, RNG& rng, const DeviceBVH& bvh)
 {
     float4 lamdas = sampleHeroWavelength(rng);
     float4 radiance = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -325,7 +320,7 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
     const float prev_brdf_density = 1 / TWO_PI; // because we sample a constant hemisphere for bounces this is constant for now
     for (int depth = 0; depth < 64; depth++) {
         Hit h;
-        if (!hitScene(scn, n, bvh, ray, h)) {
+        if (!hitScene(bvh, ray, h)) {
             float w = 1;
             if (ray.prev_was_diffuse) {
                 float light_density = light_pdf(ray.dir);
@@ -379,9 +374,9 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
         // we hit other materials
         else {
             float3 l = sampleSunDisk(rng);
-            Ray shadow_ray = {h.p + EPSILON * h.n, l, false};
+            Ray shadow_ray = {offsetRayOrigin(h.p, h.n, l), l, false};
             float n_dot_l = dot(l, h.n);
-            SeedPath seed = traceSeedPath(shadow_ray, scn, n, bvh);
+            SeedPath seed = traceSeedPath(shadow_ray, bvh);
             bool escaped = seed.outcome == SeedOutcome::Escaped;
 
             // nothing in the way: regular NEE
@@ -404,7 +399,7 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
 
                 // Newton loop
                 for(int i = 0; i < MNEE_MAX_ITERATIONS; i++) {
-                    getGlassErrors(scn, ior, h.p, l, path, errors);
+                    getGlassErrors(ior, h.p, l, path, errors);
                     bool done = true;
                     for(int j = 0; j < 2 * path.count; j++) {
                         if(fabsf(errors[j]) > MNEE_TOLERANCE) {
@@ -418,7 +413,7 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
                     }
                 
                     float J[MNEE_DIM][MNEE_DIM] = {};
-                    glassErrorJacobian(scn, ior, h.p, l, path, J, errors);
+                    glassErrorJacobian(ior, h.p, l, path, J, errors);
                     float step[MNEE_DIM] = {};
 
                     float flipped[MNEE_DIM] = {};
@@ -428,20 +423,19 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
                     if(!solve4(J, flipped, 2 * path.count, step)) break;
 
                     for(int p = 0; p < path.count; p++) {
-                        Sphere sphere = scn[path.v[p].obj_idx];
-                        float3 sphere_normal = (path.v[p].p - sphere.center) / sphere.radius;
+                        Triangle triangle = path.v[p].tri;
                         float3 s,t;
-                        tangentFrame(sphere_normal, s, t);
+                        tangentFrame(triangle.normal, s, t);
                         float3 adjusted = path.v[p].p + step[2*p] * s + step[2*p + 1] * t;
-                        path.v[p].p = projectOntoSphere(sphere, adjusted);
+                        path.v[p].p = projectOntoPlane(triangle.normal, triangle.a, adjusted);
                     }
 
                 }
 
                 if(converged) {
                     const float3 x1 = path.v[0].p, x2 = path.v[1].p;
-                    const float3 n1 = sphereNormal(scn[path.v[0].obj_idx], x1);
-                    const float3 n2 = sphereNormal(scn[path.v[1].obj_idx], x2);
+                    const float3 n1 = path.v[0].tri.normal;
+                    const float3 n2 = path.v[1].tri.normal;
 
                     // light really arrives along x_b to x1, not along l
                     float3 to_x1 = normalize(x1 - h.p);
@@ -450,9 +444,9 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
                     // the bent path must exist in the scene so ground hit to x1, x1 to x2, and x2 to the light
                     Hit escape_hit;
                     bool valid = cos_b > 0
-                        && segmentReaches(scn, n, bvh, h.p + EPSILON * h.n, x1, path.v[0].obj_idx)
-                        && segmentReaches(scn, n, bvh, x1, x2, path.v[1].obj_idx)
-                        && !hitScene(scn, n, bvh, Ray{x2, l, false}, escape_hit);
+                        && segmentReaches(bvh, offsetRayOrigin(h.p, h.n, to_x1), x1, path.v[0].obj_idx)
+                        && segmentReaches(bvh, offsetRayOrigin(x1, n1, x2 - x1), x2, path.v[1].obj_idx)
+                        && !hitScene(bvh, Ray{offsetRayOrigin(x2, n2, l), l, false}, escape_hit);
 
                     if (valid) {
                         // Fresnel transmission at each glass point
@@ -467,11 +461,11 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
                         float3 l_v = normalize(l + delta * v);
                         // same points, tilted sun: only the last vertex's two errors become non-zero
                         float errors_l_u[MNEE_DIM], errors_l_v[MNEE_DIM] = {};
-                        getGlassErrors(scn, ior, h.p, l_u, path, errors_l_u);
-                        getGlassErrors(scn, ior, h.p, l_v, path, errors_l_v);
+                        getGlassErrors(ior, h.p, l_u, path, errors_l_u);
+                        getGlassErrors(ior, h.p, l_v, path, errors_l_v);
 
                         float J[MNEE_DIM][MNEE_DIM] = {};
-                        glassErrorJacobian(scn, ior, h.p, l, path, J, errors);
+                        glassErrorJacobian(ior, h.p, l, path, J, errors);
 
                         float rhs[MNEE_DIM] = {};
                         for(int i = 0; i < MNEE_DIM; i++)
@@ -512,7 +506,7 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const Sphere* scn, int n, con
             ray.prev_was_diffuse = true;
         }
 
-        ray.origin = h.p;
+        ray.origin = offsetRayOrigin(h.p, h.n, d);
         ray.dir    = d;
     }
     // convert accumulated 4-lane radiance to CIE XYZ at the end
@@ -550,26 +544,6 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
     float3 sum = {0.0f, 0.0f, 0.0f};
     const float3 worldUp = {0.0f, 1.0f, 0.0f};
 
-    Sphere floor = {
-       {0,-100.7,-2},
-       100,
-       make_lambertian(0.8)
-    };
-
-    Sphere glass = {
-        {1.5, 0.04, 0},
-        0.5,
-        make_dielectric()
-    };
-
-    Sphere metal = {
-        {-1.5, 0.5, 0},
-        0.5,
-        make_metal(MetalType::Chrome, 0.0)
-    };
-
-    Sphere scn[3] = {floor, glass, metal};
-
     const float3 targetPos = {0.0f, 0.0f, 0.0f};
     const float3 cameraPos = {0.0f, 0.0f, -2.0f};
 
@@ -583,7 +557,7 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
         Ray ray;
         ray.origin = cameraPos;
         ray.dir    = (u - 0.5f) * 2.0f * aspect * right + (0.5f - v) * 2.0f * up + forward;
-        sum = sum + traceRadiance(ray, rng, scn, std::size(scn), bvh);
+        sum = sum + traceRadiance(ray, rng, bvh);
     }
 
     float3 avg_xyz = sum / float(spp);
@@ -598,10 +572,22 @@ __global__ void scene(unsigned char* img, int width, int height, DeviceBVH bvh, 
 
 void build_bvh(Renderer* r) {
     std::vector<Triangle> mesh = loadObj("data/spot.obj");
+    std::vector<uint32_t> indexBoundaries = {0};
+    indexBoundaries.push_back(mesh.size());
+
+    std::vector<Triangle> floor = loadObj("data/floor.obj");
+    std::vector<Triangle> combined = mesh;
+    combined.insert(combined.end(), floor.begin(), floor.end());
+    indexBoundaries.push_back(combined.size());
+
+    std::vector<Triangle> prism = loadObj("data/prism.obj");
+    combined.insert(combined.end(), prism.begin(), prism.end());
+    indexBoundaries.push_back(combined.size());
+
     BVH bvh;
-    bvh.tris = mesh;
+    bvh.tris = combined;
     bvh.build();
-    r->scene.manager.upload(bvh);
+    r->scene.manager.upload(bvh, indexBoundaries);
 }
 
 Renderer* renderer_create(int w, int h) {

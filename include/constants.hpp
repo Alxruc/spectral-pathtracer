@@ -3,7 +3,7 @@
 
 // gpu
 const int BLOCK_SIZE = 32;
-const int SPP = 1024;
+const int SPP = 512;
 const short MAX_PTR_COUNT = 64;
 
 // rendering
