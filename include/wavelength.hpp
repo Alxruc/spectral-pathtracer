@@ -36,7 +36,7 @@ __device__ float3 XYZ_to_sRGB(float3 xyz) {
 //
 
 __device__ float fwrap(float x, float min, float max) {
-    return min + fmodf(x, max-min);
+    return min + fmodf(x - min, max-min);
 }
 
 __device__ float sampleWavelength(RNG& rng) {
@@ -53,8 +53,8 @@ result quicker
 __device__ float4 sampleHeroWavelength(RNG& rng) {
     float hero_wavelength = sampleWavelength(rng);
     float wavelength_range = MAX_WAVELENGTH_NM - MIN_WAVELENGTH_NM;
-    float support1 = fwrap(hero_wavelength + wavelength_range / 4.0f, MAX_WAVELENGTH_NM, MIN_WAVELENGTH_NM);
-    float support2 = fwrap(hero_wavelength + 2 * wavelength_range / 4.0f, MAX_WAVELENGTH_NM, MIN_WAVELENGTH_NM);
-    float support3 = fwrap(hero_wavelength + 3 * wavelength_range / 4.0f, MAX_WAVELENGTH_NM, MIN_WAVELENGTH_NM);
+    float support1 = fwrap(hero_wavelength + wavelength_range / 4.0f, MIN_WAVELENGTH_NM, MAX_WAVELENGTH_NM);
+    float support2 = fwrap(hero_wavelength + 2 * wavelength_range / 4.0f, MIN_WAVELENGTH_NM, MAX_WAVELENGTH_NM);
+    float support3 = fwrap(hero_wavelength + 3 * wavelength_range / 4.0f, MIN_WAVELENGTH_NM, MAX_WAVELENGTH_NM);
     return make_float4(hero_wavelength, support1, support2, support3); 
 }

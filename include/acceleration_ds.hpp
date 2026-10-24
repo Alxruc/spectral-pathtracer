@@ -67,7 +67,7 @@ struct DeviceBVH {
     Material lambertian = make_lambertian(0.7);
     Material glass = make_dielectric();
     Material metal = make_metal(MetalType::Chrome, 0.1);
-    Material emissive = make_emissive(5000, 200.0);
+    Material emissive = make_emissive(5000, 20.0);
 
     // for mapping the triangles to the objects they belong to
     const uint32_t* object_boundaries = nullptr;

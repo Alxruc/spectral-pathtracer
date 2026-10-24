@@ -54,3 +54,6 @@ A Debug build can be slower since HIP's vector-type math isn't as aggressively i
 ```bash
 ./build/spectral_pathtracer
 ```
+
+## 3D Models
+[Glass Model](https://sketchfab.com/3d-models/glass-4638689dc697465eace0374125e5855e)

@@ -59,7 +59,7 @@ __host__ __device__ inline Material make_dielectric() {
 __host__ __device__ inline Material make_emissive(float temperature, float brightness) {
     return Material{
         .type = MatType::Emissive,
-        .emissive = { .temperature = temperature, .brightness = brightness, .pdf_area = 1 }
+        .emissive = { .temperature = temperature, .brightness = brightness, .pdf_area = 0.5 }
     };
 }
 

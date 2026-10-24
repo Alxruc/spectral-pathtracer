@@ -3,7 +3,7 @@
 
 // gpu
 const int BLOCK_SIZE = 32;
-const int SPP = 1024;
+const int SPP = 4096;
 const short MAX_PTR_COUNT = 64;
 
 // rendering
@@ -14,7 +14,7 @@ const float NORMALIZATION_WAVELENGTH_NM = 550;
 const float NORMALIZATION_CONSTANT = 0.011;
 
 // object index of the emissive square in build_bvh's indexBoundaries
-const uint32_t LIGHT_OBJ_IDX = 3;
+const uint32_t LIGHT_OBJ_IDX = 2;
 
 // MNEE: most glass crossings a seed path may have (one sphere = enter + leave)
 const int MAX_SPECULAR_BOUNCES = 2;
@@ -24,6 +24,7 @@ const int MNEE_MAX_ITERATIONS = 15; // paper Table 1
 const float MNEE_TOLERANCE = 1e-4f; // all errors below this = Snell holds
 
 // sun
+const bool SUN_ENABLED = false;
 // (5, 5, 2) normalized
 __device__ const float3 SUN_DIR = {0.680414f, 0.680414f, 0.272166f};
 __device__ const float SUN_TEMPERATURE = 5778; // K
@@ -31,7 +32,7 @@ __device__ const float SUN_TEMPERATURE = 5778; // K
 // for our sun to be brighter than the sky
 // number pulled out from thin air for now just based on vibes
 // to make it look semi right
-__device__ const float SUN_SCALE = 2e6;
+__device__ const float SUN_SCALE = 5e5;
 
 // blackbody(550nm, 5778) precomputed
 __device__ const float SUN_NORMALIZING = 2.586 * 10e13;
