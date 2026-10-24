@@ -3,7 +3,7 @@
 
 #include <hip/hip_runtime.h>
 
-enum class MatType { Lambertian, Metal, Dielectric };
+enum class MatType { Lambertian, Metal, Dielectric, Emissive };
 enum class MetalType { Chrome, Gold };
 
 struct MetalProps {
@@ -19,12 +19,19 @@ struct DielectricProps {
     float albedo;
 };
 
+struct EmissiveProps {
+    float temperature;
+    float brightness;
+    float pdf_area;
+};
+
 struct Material {
     MatType type;
     union {
         LambertianProps lambertian;
         MetalProps      metal;
         DielectricProps dielectric;
+        EmissiveProps emissive;
     };
 };
 
@@ -46,6 +53,13 @@ __host__ __device__ inline Material make_dielectric() {
     return Material{
         .type = MatType::Dielectric,
         .dielectric = { .albedo = 1.0f }
+    };
+}
+
+__host__ __device__ inline Material make_emissive(float temperature, float brightness) {
+    return Material{
+        .type = MatType::Emissive,
+        .emissive = { .temperature = temperature, .brightness = brightness, .pdf_area = 1 }
     };
 }
 

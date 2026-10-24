@@ -3,7 +3,7 @@
 
 // gpu
 const int BLOCK_SIZE = 32;
-const int SPP = 512;
+const int SPP = 1024;
 const short MAX_PTR_COUNT = 64;
 
 // rendering
@@ -12,6 +12,9 @@ const float MAX_WAVELENGTH_NM = 830;
 constexpr float UNIFORM_DENSITY = 0.00212765957;
 const float NORMALIZATION_WAVELENGTH_NM = 550;
 const float NORMALIZATION_CONSTANT = 0.011;
+
+// object index of the emissive square in build_bvh's indexBoundaries
+const uint32_t LIGHT_OBJ_IDX = 3;
 
 // MNEE: most glass crossings a seed path may have (one sphere = enter + leave)
 const int MAX_SPECULAR_BOUNCES = 2;

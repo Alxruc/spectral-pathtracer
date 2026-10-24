@@ -11,6 +11,7 @@
 #include <acceleration_ds.hpp>
 #include <io.hpp>
 #include <wavelength.hpp>
+#include <light.hpp>
 
 // dont know if this is bad
 struct Scene {
@@ -71,7 +72,12 @@ __device__ bool hitScene(const DeviceBVH& bvh, const Ray& r, Hit& h)
         h.n = h.front_face ? tri_n : -tri_n;
         h.p = r.origin + t * r.dir; // exact surface point, offsetRayOrigin handles acne when spawning
         h.obj_idx = bvh.getObjectIdx(global_triangle_idx);
-        h.mat = (h.obj_idx % 3 == 0) ? &bvh.metal : ((h.obj_idx % 3 == 1) ? &bvh.lambertian : &bvh.glass);
+        switch (h.obj_idx) {
+            case 0:  h.mat = &bvh.metal;      break; // spot
+            case 1:  h.mat = &bvh.lambertian; break; // floor
+            case 2:  h.mat = &bvh.glass;      break; // prism
+            default: h.mat = &bvh.emissive;   break; // light
+        }
         h.tri = bvh.tris[global_triangle_idx];
     }
 
@@ -141,6 +147,16 @@ __device__ float4 sunRadiance(float4 lamdas) {
         SUN_SCALE * blackbody(lamdas.y, SUN_TEMPERATURE) / SUN_NORMALIZING,
         SUN_SCALE * blackbody(lamdas.z, SUN_TEMPERATURE) / SUN_NORMALIZING,
         SUN_SCALE * blackbody(lamdas.w, SUN_TEMPERATURE) / SUN_NORMALIZING
+    );
+}
+
+__device__ float4 emittedRadiance(const EmissiveProps& e, float4 lamdas) {
+    float norm = e.brightness / blackbody(NORMALIZATION_WAVELENGTH_NM, e.temperature);
+    return make_float4(
+        norm * blackbody(lamdas.x, e.temperature),
+        norm * blackbody(lamdas.y, e.temperature),
+        norm * blackbody(lamdas.z, e.temperature),
+        norm * blackbody(lamdas.w, e.temperature)
     );
 }
 
@@ -371,12 +387,28 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const DeviceBVH& bvh)
             throughput *= reflectance;
             ray.prev_was_diffuse = false;
         }
+        else if (h.mat->type == MatType::Emissive) {
+            float cos_l = dot(h.n, -ray.dir);
+            if (h.front_face) { // only the emitting side
+                // Convert the mesh's area PDF to solid angle measure for this bounce hit
+                float pdf_light_sa = h.mat->emissive.pdf_area * (h.t * h.t) / cos_l;
+                
+                // Balance heuristic against the BSDF PDF that sampled this bounce ray
+                float mis_weight = 1;
+                if (ray.prev_was_diffuse) {
+                    mis_weight = prev_brdf_density / (prev_brdf_density + pdf_light_sa);
+                }
+                
+                radiance += throughput * emittedRadiance(h.mat->emissive, lamdas) * mis_weight;  
+            }
+            break;
+        }
         // we hit other materials
         else {
             float3 l = sampleSunDisk(rng);
-            Ray shadow_ray = {offsetRayOrigin(h.p, h.n, l), l, false};
+            Ray sun_block_ray = {offsetRayOrigin(h.p, h.n, l), l, false};
             float n_dot_l = dot(l, h.n);
-            SeedPath seed = traceSeedPath(shadow_ray, bvh);
+            SeedPath seed = traceSeedPath(sun_block_ray, bvh);
             bool escaped = seed.outcome == SeedOutcome::Escaped;
 
             // nothing in the way: regular NEE
@@ -500,6 +532,31 @@ __device__ float3 traceRadiance(Ray ray, RNG& rng, const DeviceBVH& bvh)
             }
             // otherwise x_b is in shadow
 
+            // NEE towards the emissive square
+            // really ugly and (hopefully) temporary
+            AreaLight light_sample = sampleLight(bvh, rng);
+            float3 light_dir = light_sample.p - h.p;
+            float light_dist_sq = length_sq(light_dir);
+
+            light_dir = light_dir / sqrtf(light_dist_sq);
+
+            float n_dot_light = dot(light_dir, h.n);
+
+            float cos_light = dot(light_sample.n, -light_dir);
+
+            if(n_dot_light > 0 && cos_light > 0 && 
+                segmentReaches(bvh, offsetRayOrigin(h.p, h.n, light_dir), light_sample.p, LIGHT_OBJ_IDX)) {
+                float4 light_rad = emittedRadiance(light_sample.material->emissive, lamdas);
+                float pdf_light_sa = light_sample.material->emissive.pdf_area * (light_dist_sq) / cos_light;
+                float mis_weight =  1.0f / (pdf_light_sa + prev_brdf_density);
+
+                radiance += throughput 
+                          * (h.mat->lambertian.albedo / PI) 
+                          * light_rad 
+                          * n_dot_light
+                          * mis_weight;
+            }
+
             d = sampleSphere(rng);
             if (dot(d, h.n) < 0.0f) d = -1.0f * d;
             throughput *= 2.0f * h.mat->lambertian.albedo * dot(d, h.n);
@@ -582,6 +639,10 @@ void build_bvh(Renderer* r) {
 
     std::vector<Triangle> prism = loadObj("data/prism.obj");
     combined.insert(combined.end(), prism.begin(), prism.end());
+    indexBoundaries.push_back(combined.size());
+
+    std::vector<Triangle> light = loadObj("data/light.obj");
+    combined.insert(combined.end(), light.begin(), light.end());
     indexBoundaries.push_back(combined.size());
 
     BVH bvh;

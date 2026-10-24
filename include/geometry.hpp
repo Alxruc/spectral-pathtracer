@@ -25,6 +25,10 @@ inline float3 max(const float3& a, const float3& b) {
     return float3{ fmaxf(a.x, b.x), fmaxf(a.y, b.y), fmaxf(a.z, b.z) };
 }
 
+__host__ __device__ inline float length_sq(const float3 a) {
+    return a.x * a.x + a.y * a.y + a.z * a.z;
+}
+
 struct Triangle {
     float3 a, b, c;
     float3 normal;

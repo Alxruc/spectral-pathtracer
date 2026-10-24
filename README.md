@@ -5,6 +5,8 @@ A spectral path tracer targeting AMD GPUs via HIP/ROCm.
 
 <img src="out.png" width="400">
 
+Be wary, as the code is currently quite ugly. 
+
 ## Requirements
 
 - CMake >= 3.21
